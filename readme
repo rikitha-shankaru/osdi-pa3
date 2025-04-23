@@ -1,0 +1,53 @@
+fat12util/
+├── fat12.h          # Public header (structs, constants, main functions)
+├── fat12.c          # Core FAT12 implementation (main functions)
+├── fat12_helpers.h  # Private helper declarations (optional)
+├── fat12_helpers.c  # Helper implementations
+├── main.c           # CLI interface
+└── Makefile
+
+
+#Testing the Implementation
+    #Create test disk:
+        dd if=/dev/zero bs=512 count=2880 of=disk.fat
+        mkfs.msdos -F 12 disk.fat
+
+    #Build and run:
+        make
+        ./fat12util disk.fat list
+
+    #Test file operations:
+        # Copy file out
+        ./fat12util disk.fat copyout TEST.TXT output.txt
+
+        # Copy file in
+        ./fat12util disk.fat copyin input.txt NEWFILE.TXT
+
+    # Create nested directory structure
+        ./fat12util disk.fat mkdir /data
+        ./fat12util disk.fat mkdir /data/subdir
+
+    # Create and edit files
+        ./fat12util disk.fat create /data/test.txt
+        ./fat12util disk.fat edit /data/test.txt 0 "Hello FAT12!"
+
+    # List contents
+        ./fat12util disk.fat ls /data
+
+    # Delete files
+        ./fat12util disk.fat delete /data/test.txt
+
+
+
+#Run the program
+# Build
+make
+
+# List files
+./fat12util disk.fat list
+
+# Extract file
+./fat12util disk.fat copyout TEST.TXT output.txt
+
+# Insert file
+./fat12util disk.fat copyin newfile.txt NEWFILE.TXT
