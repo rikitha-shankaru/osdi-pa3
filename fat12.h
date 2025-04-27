@@ -45,8 +45,8 @@
 
 /* Boot Sector structure */
 struct BootSector {
-    char jump[3];
-    char oem[8];
+    unsigned char jump[3];
+    unsigned char oem[8];
     unsigned short bytes_per_sector;
     unsigned char sectors_per_cluster;
     unsigned short reserved_sectors;
@@ -63,23 +63,23 @@ struct BootSector {
     unsigned char reserved;
     unsigned char boot_signature;
     unsigned long volume_id;
-    char volume_label[11];
-    char fs_type[8];
-    char boot_code[448];
+    unsigned char volume_label[11];
+    unsigned char fs_type[8];
+    unsigned char boot_code[448];
     unsigned short signature;
-};
+} __attribute__((packed));
 
 /* Directory Entry structure */
 struct DirEntry {
-    char filename[8];
-    char extension[3];
+    unsigned char filename[8];
+    unsigned char extension[3];
     unsigned char attributes;
     unsigned char reserved[10];
     unsigned short time;
     unsigned short date;
     unsigned short first_cluster;
     unsigned long file_size;
-};
+} __attribute__((packed));
 
 /* Change all function declarations in fat12.h to K&R style */
 int read_boot_sector();
