@@ -62,12 +62,12 @@ struct BootSector *bs;
     }
     
     bs->bytes_per_sector = le16_to_cpu(bs->bytes_per_sector);
-    bs->sectors_per_cluster = bs->sectors_per_cluster;
+    bs->sectors_per_cluster = bs->sectors_per_cluster;  /* Already 8-bit */
     bs->reserved_sectors = le16_to_cpu(bs->reserved_sectors);
-    bs->fat_count = bs->fat_count;
+    bs->fat_count = bs->fat_count;  /* Already 8-bit */
     bs->root_entries = le16_to_cpu(bs->root_entries);
     bs->total_sectors_16 = le16_to_cpu(bs->total_sectors_16);
-    bs->media_type = bs->media_type;
+    bs->media_type = bs->media_type;  /* Already 8-bit */
     bs->sectors_per_fat = le16_to_cpu(bs->sectors_per_fat);
     bs->sectors_per_track = le16_to_cpu(bs->sectors_per_track);
     bs->head_count = le16_to_cpu(bs->head_count);
@@ -109,6 +109,10 @@ struct BootSector *bs;
         if (entry.filename[0] == 0xE5)
             continue;
 
+        /* Skip volume label */
+        if (entry.attributes & ATTR_VOLUME_ID)
+            continue;
+
         /* Print file info */
         printf("0x%02X\t%lu\t%u\t",
                entry.attributes,
@@ -133,7 +137,7 @@ struct BootSector *bs;
         putchar('\n');
     }
 
- return 0;
+    return 0;
 }
 
 /* Extract file from FAT12 disk to host */
@@ -202,12 +206,14 @@ char *host_filename;
     while (cluster < CLUSTER_END && cluster != CLUSTER_FREE && file_size > 0) {
         sector = get_cluster_location(bs, cluster);
         lseek(fd, sector * bs->bytes_per_sector, SEEK_SET);
-        if (read(fd, buffer, cluster_size) != cluster_size) {
+        
+        /* Read only what we need */
+        write_size = (file_size < cluster_size) ? file_size : cluster_size;
+        if (read(fd, buffer, write_size) != write_size) {
             perror("Error reading cluster data");
             break;
         }
 
-        write_size = (file_size < cluster_size) ? file_size : cluster_size;
         if (fwrite(buffer, 1, write_size, out_file) != write_size) {
             perror("Error writing to output file");
             break;
@@ -231,6 +237,7 @@ char *fat_filename;
 {
     struct DirEntry new_entry, entry;
     unsigned long root_dir_start, root_dir_sectors, file_size, cluster_size, original_file_size, sector, read_size;
+    unsigned long total_clusters, available_clusters;
     FILE *in_file;
     unsigned char *buffer;
     unsigned short first_cluster, prev_cluster, new_cluster;
@@ -246,23 +253,23 @@ char *fat_filename;
 
     lseek(fd, root_dir_start, SEEK_SET);
     for (i = 0; i < bs->root_entries; i++) {
-        entry;
         if (read(fd, &entry, sizeof(struct DirEntry)) != sizeof(struct DirEntry)) {
             perror("Error reading directory entry");
-            return -1;
+            break;
         }
 
-        if (entry.filename[0] == 0x00 && free_entry == -1) {
+        if (entry.filename[0] == 0x00) {
             free_entry = i;
             break;
         }
-        if (entry.filename[0] == 0xE5 && free_entry == -1) {
+        if (entry.filename[0] == 0xE5) {
             free_entry = i;
+            break;
         }
     }
 
     if (free_entry == -1) {
-        fprintf(stderr, "Root directory is full\n");
+        fprintf(stderr, "No free directory entries\n");
         return -1;
     }
 
@@ -273,9 +280,23 @@ char *fat_filename;
     }
 
     fseek(in_file, 0, SEEK_END);
-    original_file_size = ftell(in_file);
+    file_size = ftell(in_file);
     fseek(in_file, 0, SEEK_SET);
-    file_size = original_file_size;
+
+    /* Check if we have enough space */
+    total_clusters = (bs->sectors_per_fat * bs->bytes_per_sector * 2 / 3) - 2;
+    available_clusters = 0;
+    for (i = 2; i < total_clusters; i++) {
+        if (read_fat_entry(fd, bs, i) == CLUSTER_FREE) {
+            available_clusters++;
+        }
+    }
+
+    if ((file_size + cluster_size - 1) / cluster_size > available_clusters) {
+        fprintf(stderr, "Not enough free clusters\n");
+        fclose(in_file);
+        return -1;
+    }
 
     buffer = malloc(cluster_size);
     if (!buffer) {
@@ -284,35 +305,46 @@ char *fat_filename;
         return -1;
     }
 
-    first_cluster = 0;
-    prev_cluster = 0;
+    first_cluster = find_free_cluster(fd, bs);
+    if (first_cluster == 0) {
+        fprintf(stderr, "No free clusters\n");
+        free(buffer);
+        fclose(in_file);
+        return -1;
+    }
+
+    prev_cluster = first_cluster;
+    original_file_size = file_size;
 
     while (file_size > 0) {
-        new_cluster = find_free_cluster(fd, bs);
-        if (new_cluster == CLUSTER_FREE) {
-            fprintf(stderr, "No free clusters available\n");
+        read_size = (file_size < cluster_size) ? file_size : cluster_size;
+        if (fread(buffer, 1, read_size, in_file) != read_size) {
+            perror("Error reading from input file");
             break;
         }
 
-        if (prev_cluster != 0) {
-            update_fat(fd, bs, prev_cluster, new_cluster);
-        } else {
-            first_cluster = new_cluster;
+        sector = get_cluster_location(bs, prev_cluster);
+        lseek(fd, sector * bs->bytes_per_sector, SEEK_SET);
+        if (write(fd, buffer, read_size) != read_size) {
+            perror("Error writing cluster data");
+            break;
         }
 
-        read_size = fread(buffer, 1, cluster_size, in_file);
-        if (read_size <= 0) break;
-
-        sector = get_cluster_location(bs, new_cluster);
-        lseek(fd, sector * bs->bytes_per_sector, SEEK_SET);
-        write(fd, buffer, cluster_size);
-
-        update_fat(fd, bs, new_cluster, CLUSTER_END);
-        prev_cluster = new_cluster;
         file_size -= read_size;
+
+        if (file_size > 0) {
+            new_cluster = find_free_cluster(fd, bs);
+            if (new_cluster == 0) {
+                fprintf(stderr, "No free clusters\n");
+                break;
+            }
+            update_fat(fd, bs, prev_cluster, new_cluster);
+            prev_cluster = new_cluster;
+        }
     }
 
-    memset(&new_entry, 0, sizeof(struct DirEntry));
+    update_fat(fd, bs, prev_cluster, CLUSTER_END);
+
     to_83_filename(fat_filename, new_entry.filename);
     new_entry.attributes = ATTR_ARCHIVE;
     new_entry.first_cluster = cpu_to_le16(first_cluster);
@@ -338,25 +370,31 @@ int fd;
 struct BootSector *bs;
 unsigned short cluster;
 {
-    unsigned long fat_offset, fat_sector, entry_offset;
-    unsigned char sector[512];
-    unsigned short entry;
-
-    fat_offset = cluster * 3 / 2;
-    fat_sector = bs->reserved_sectors + (fat_offset / bs->bytes_per_sector);
-    entry_offset = fat_offset % bs->bytes_per_sector;
+    unsigned long fat_offset, fat_sector, fat_entry_offset;
+    unsigned short fat_entry;
+    unsigned char fat_data[3];
     
-    lseek(fd, fat_sector * bs->bytes_per_sector, SEEK_SET);
-    if (read(fd, sector, bs->bytes_per_sector) != bs->bytes_per_sector) {
-        perror("Error reading FAT sector");
+    /* Validate cluster number */
+    if (cluster < 2 || cluster >= (bs->sectors_per_fat * bs->bytes_per_sector * 2 / 3)) {
         return CLUSTER_BAD;
     }
     
-    entry = sector[entry_offset] | (sector[entry_offset + 1] << 8);
-    if (cluster & 1) entry >>= 4;
-    else entry &= 0x0FFF;
+    fat_offset = cluster + (cluster / 2);
+    fat_sector = bs->reserved_sectors + (fat_offset / bs->bytes_per_sector);
+    fat_entry_offset = fat_offset % bs->bytes_per_sector;
     
-    return entry;
+    lseek(fd, fat_sector * bs->bytes_per_sector + fat_entry_offset, SEEK_SET);
+    if (read(fd, fat_data, 3) != 3) {
+        perror("Error reading FAT entry");
+        return CLUSTER_BAD;
+    }
+    
+    if (cluster & 1)
+        fat_entry = ((fat_data[1] & 0x0F) << 8) | fat_data[0];
+    else
+        fat_entry = (fat_data[2] << 4) | (fat_data[1] >> 4);
+    
+    return le16_to_cpu(fat_entry);
 }
 
 /* Get physical sector for cluster */
@@ -378,32 +416,43 @@ struct BootSector *bs;
 unsigned short cluster;
 unsigned short value;
 {
-    unsigned long fat_offset, fat_sector, entry_offset;
-    unsigned char sector[512];
-
-    fat_offset = cluster * 3 / 2;
-    fat_sector = bs->reserved_sectors + (fat_offset / bs->bytes_per_sector);
-    entry_offset = fat_offset % bs->bytes_per_sector;
+    unsigned long fat_offset, fat_sector, fat_entry_offset;
+    unsigned char fat_data[3];
+    int i;
     
-    lseek(fd, fat_sector * bs->bytes_per_sector, SEEK_SET);
-    if (read(fd, sector, bs->bytes_per_sector) != bs->bytes_per_sector) {
-        perror("Error reading FAT sector");
+    /* Validate cluster number */
+    if (cluster < 2 || cluster >= (bs->sectors_per_fat * bs->bytes_per_sector * 2 / 3)) {
+        return -1;
+    }
+    
+    value = cpu_to_le16(value);
+    fat_offset = cluster + (cluster / 2);
+    fat_sector = bs->reserved_sectors + (fat_offset / bs->bytes_per_sector);
+    fat_entry_offset = fat_offset % bs->bytes_per_sector;
+    
+    lseek(fd, fat_sector * bs->bytes_per_sector + fat_entry_offset, SEEK_SET);
+    if (read(fd, fat_data, 3) != 3) {
+        perror("Error reading FAT entry");
         return -1;
     }
     
     if (cluster & 1) {
-        sector[entry_offset] = (sector[entry_offset] & 0x0F) | ((value << 4) & 0xF0);
-        sector[entry_offset+1] = (value >> 4) & 0xFF;
+        fat_data[0] = value & 0xFF;
+        fat_data[1] = (fat_data[1] & 0xF0) | ((value >> 8) & 0x0F);
     } else {
-        sector[entry_offset] = value & 0xFF;
-        sector[entry_offset+1] = (sector[entry_offset+1] & 0xF0) | ((value >> 8) & 0x0F);
+        fat_data[1] = (fat_data[1] & 0x0F) | ((value << 4) & 0xF0);
+        fat_data[2] = (value >> 4) & 0xFF;
     }
     
-    lseek(fd, fat_sector * bs->bytes_per_sector, SEEK_SET);
-    if (write(fd, sector, bs->bytes_per_sector) != bs->bytes_per_sector) {
-        perror("Error writing FAT sector");
-        return -1;
+    /* Update both FAT copies */
+    for (i = 0; i < bs->fat_count; i++) {
+        lseek(fd, (bs->reserved_sectors + (i * bs->sectors_per_fat)) * bs->bytes_per_sector + fat_entry_offset, SEEK_SET);
+        if (write(fd, fat_data, 3) != 3) {
+            perror("Error writing FAT entry");
+            return -1;
+        }
     }
+    
     return 0;
 }
 
@@ -445,8 +494,11 @@ char *out;
     /* Calculate base length without special chars */
     base_len = 0;
     for (i = 0; name[i] && name[i] != '.' && base_len < 8; i++) {
+        /* Convert to uppercase and handle special chars */
         if (isalnum(name[i])) {
             out[base_len++] = toupper(name[i]);
+        } else if (name[i] == '_' || name[i] == '-') {
+            out[base_len++] = '_';
         }
     }
     
@@ -466,8 +518,11 @@ char *out;
     if (dot && dot[1]) {
         ext_len = 0;
         for (i = 1; ext_len < 3 && dot[i]; i++) {
+            /* Convert to uppercase and handle special chars */
             if (isalnum(dot[i])) {
                 out[8 + ext_len++] = toupper(dot[i]);
+            } else if (dot[i] == '_' || dot[i] == '-') {
+                out[8 + ext_len++] = '_';
             }
         }
         if (ext_len == 0) {
@@ -497,6 +552,12 @@ int is_dir;
     unsigned short parent_cluster;
     struct DirEntry new_entry;
     unsigned long entry_offset;
+
+    /* Verify path length */
+    if (strlen(path) >= MAX_PATH_LEN) {
+        fprintf(stderr, "Path too long\n");
+        return -1;
+    }
 
     memset(&new_entry, 0, sizeof(new_entry));
 
@@ -561,10 +622,19 @@ char *path;
         return -1;
     }
 
-    if ((entry.attributes & ATTR_DIRECTORY) && 
-        !is_directory_empty(fd, bs, le16_to_cpu(entry.first_cluster))) {
-        fprintf(stderr, "Directory not empty\n");
-        return -1;
+    /* Check if it's a directory */
+    if (entry.attributes & ATTR_DIRECTORY) {
+        /* Skip . and .. entries */
+        if (strncmp(entry.filename, ".       ", 8) == 0 ||
+            strncmp(entry.filename, "..      ", 8) == 0) {
+            fprintf(stderr, "Cannot delete . or .. entries\n");
+            return -1;
+        }
+        
+        if (!is_directory_empty(fd, bs, le16_to_cpu(entry.first_cluster))) {
+            fprintf(stderr, "Directory not empty\n");
+            return -1;
+        }
     }
 
     cluster = le16_to_cpu(entry.first_cluster);
