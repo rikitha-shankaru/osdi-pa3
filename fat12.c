@@ -83,10 +83,11 @@ int list_root_directory(fd, bs)
 int fd;
 struct BootSector *bs;
 {
+    int i, j;
     unsigned long root_dir_start, root_dir_sectors;
     struct DirEntry entry;
+
     memset(&entry, 0, sizeof(entry));
-    int i, j;
 
     root_dir_sectors = ((bs->root_entries * 32) + (bs->bytes_per_sector - 1)) / bs->bytes_per_sector;
     root_dir_start = (bs->reserved_sectors + (bs->fat_count * bs->sectors_per_fat)) * bs->bytes_per_sector;
@@ -143,13 +144,14 @@ char *fat_filename;
 char *host_filename;
 {
     struct DirEntry entry;
-    memset(&entry, 0, sizeof(entry));
     unsigned long root_dir_start, root_dir_sectors, file_size, cluster_size, sector, write_size;
     unsigned short cluster;
     FILE *out_file;
     unsigned char *buffer;
     int i, found;
     char search_name[11];
+
+    memset(&entry, 0, sizeof(entry));
 
     root_dir_sectors = ((bs->root_entries * 32) + (bs->bytes_per_sector - 1)) / bs->bytes_per_sector;
     root_dir_start = (bs->reserved_sectors + (bs->fat_count * bs->sectors_per_fat)) * bs->bytes_per_sector;
@@ -228,13 +230,14 @@ char *host_filename;
 char *fat_filename;
 {
     struct DirEntry new_entry, entry;
-    memset(&entry, 0, sizeof(entry));
-    memset(&new_entry, 0, sizeof(new_entry));
     unsigned long root_dir_start, root_dir_sectors, file_size, cluster_size, original_file_size, sector, read_size;
     FILE *in_file;
     unsigned char *buffer;
     unsigned short first_cluster, prev_cluster, new_cluster;
     int i, free_entry;
+
+    memset(&entry, 0, sizeof(entry));
+    memset(&new_entry, 0, sizeof(new_entry));
 
     root_dir_sectors = ((bs->root_entries * 32) + (bs->bytes_per_sector - 1)) / bs->bytes_per_sector;
     root_dir_start = (bs->reserved_sectors + (bs->fat_count * bs->sectors_per_fat)) * bs->bytes_per_sector;
@@ -493,8 +496,9 @@ int is_dir;
     char *last_slash, *filename, dir_path[MAX_PATH_LEN];
     unsigned short parent_cluster;
     struct DirEntry new_entry;
-    memset(&new_entry, 0, sizeof(new_entry));
     unsigned long entry_offset;
+
+    memset(&new_entry, 0, sizeof(new_entry));
 
     last_slash = strrchr(path, '/');
     filename = last_slash ? last_slash + 1 : path;
@@ -545,10 +549,11 @@ struct BootSector *bs;
 char *path;
 {
     struct DirEntry entry;
-    memset(&entry, 0, sizeof(entry));
     unsigned long entry_offset;
     unsigned short parent_cluster, cluster, next;
     unsigned char marker;
+
+    memset(&entry, 0, sizeof(entry));
 
     parent_cluster = find_file(fd, bs, path, &entry, &entry_offset);
     if (parent_cluster == (unsigned short)-1) {
@@ -586,9 +591,10 @@ unsigned char *data;
 unsigned long size;
 {
     struct DirEntry entry;
-    memset(&entry, 0, sizeof(entry));
     unsigned short cluster;
     unsigned long file_size, sector, sector_offset, bytes_remaining, cluster_size;
+    
+    memset(&entry, 0, sizeof(entry));
 
     if (!find_file(fd, bs, path, &entry, NULL)) {
         fprintf(stderr, "File not found\n");
@@ -629,8 +635,9 @@ char *path;
     unsigned short cluster;
     unsigned long sector;
     struct DirEntry entry;
-    memset(&entry, 0, sizeof(entry));
     char name[13];
+    
+    memset(&entry, 0, sizeof(entry));
 
     cluster = resolve_path(fd, bs, path);
     if (cluster == (unsigned short)-1) {
@@ -667,6 +674,7 @@ unsigned short cluster;
 {
     unsigned long sector;
     struct DirEntry entry;
+
     memset(&entry, 0, sizeof(entry));
 
     sector = get_cluster_location(bs, cluster);
@@ -740,6 +748,7 @@ char *path;
     unsigned short current_cluster;
     unsigned long dir_start;
     struct DirEntry entry;
+    
     memset(&entry, 0, sizeof(entry));
 
     if (strcmp(path, "/") == 0) return 0;
@@ -791,10 +800,11 @@ unsigned short parent_cluster;
 {
     unsigned char sector[512];
     struct DirEntry dot, dotdot;
-    memset(&dot, 0, sizeof(dot));
-    memset(&dotdot, 0, sizeof(dotdot));
     unsigned long sector_addr;
     int i;
+    
+    memset(&dot, 0, sizeof(dot));
+    memset(&dotdot, 0, sizeof(dotdot));
 
     sector_addr = get_cluster_location(bs, cluster);
     memset(sector, 0, sizeof(sector));
@@ -828,6 +838,7 @@ unsigned short cluster;
 {
     unsigned long dir_start, offset;
     struct DirEntry entry;
+    
     memset(&entry, 0, sizeof(entry));
 
     dir_start = get_cluster_location(bs, cluster);
