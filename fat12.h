@@ -102,4 +102,4 @@ int resolve_path();
 int initialize_directory_cluster();
 int find_free_entry();
 
-#endif /* FAT12_H */
+#endif

@@ -62,12 +62,12 @@ struct BootSector *bs;
     }
     
     bs->bytes_per_sector = le16_to_cpu(bs->bytes_per_sector);
-    bs->sectors_per_cluster = bs->sectors_per_cluster;  // uint8_t, no conversion
+    bs->sectors_per_cluster = bs->sectors_per_cluster;
     bs->reserved_sectors = le16_to_cpu(bs->reserved_sectors);
-    bs->fat_count = bs->fat_count;                     // uint8_t, no conversion
+    bs->fat_count = bs->fat_count;
     bs->root_entries = le16_to_cpu(bs->root_entries);
     bs->total_sectors_16 = le16_to_cpu(bs->total_sectors_16);
-    bs->media_type = bs->media_type;                   // uint8_t, no conversion
+    bs->media_type = bs->media_type;
     bs->sectors_per_fat = le16_to_cpu(bs->sectors_per_fat);
     bs->sectors_per_track = le16_to_cpu(bs->sectors_per_track);
     bs->head_count = le16_to_cpu(bs->head_count);
@@ -83,9 +83,9 @@ int list_root_directory(fd, bs)
 int fd;
 struct BootSector *bs;
 {
-    unsigned long root_dir_start;
-    unsigned long root_dir_sectors;
+    unsigned long root_dir_start, root_dir_sectors;
     struct DirEntry entry;
+    memset(&entry, 0, sizeof(entry));
     int i, j;
 
     root_dir_sectors = ((bs->root_entries * 32) + (bs->bytes_per_sector - 1)) / bs->bytes_per_sector;
@@ -105,7 +105,7 @@ struct BootSector *bs;
 
         if (entry.filename[0] == 0x00)
             break;
-        if ((unsigned char)entry.filename[0] == 0xE5)
+        if (entry.filename[0] == 0xE5)
             continue;
 
         /* Print file info */
@@ -143,13 +143,11 @@ char *fat_filename;
 char *host_filename;
 {
     struct DirEntry entry;
-    unsigned long root_dir_start;
-    unsigned long root_dir_sectors;
+    memset(&entry, 0, sizeof(entry));
+    unsigned long root_dir_start, root_dir_sectors, file_size, cluster_size, sector, write_size;
     unsigned short cluster;
     FILE *out_file;
     unsigned char *buffer;
-    unsigned long file_size;
-    unsigned long cluster_size;
     int i, found;
     char search_name[11];
 
@@ -169,7 +167,7 @@ char *host_filename;
         }
 
         if (entry.filename[0] == 0x00) break;
-        if ((unsigned char)entry.filename[0] == 0xE5) continue;
+        if (entry.filename[0] == 0xE5) continue;
 
         /* Compare raw 8.3 names (no dot) */
         if (memcmp(entry.filename, search_name, 11) == 0) {
@@ -200,14 +198,14 @@ char *host_filename;
     file_size = le32_to_cpu(entry.file_size);
 
     while (cluster < CLUSTER_END && cluster != CLUSTER_FREE && file_size > 0) {
-        unsigned long sector = get_cluster_location(bs, cluster);
+        sector = get_cluster_location(bs, cluster);
         lseek(fd, sector * bs->bytes_per_sector, SEEK_SET);
         if (read(fd, buffer, cluster_size) != cluster_size) {
             perror("Error reading cluster data");
             break;
         }
 
-        unsigned long write_size = (file_size < cluster_size) ? file_size : cluster_size;
+        write_size = (file_size < cluster_size) ? file_size : cluster_size;
         if (fwrite(buffer, 1, write_size, out_file) != write_size) {
             perror("Error writing to output file");
             break;
@@ -229,16 +227,14 @@ struct BootSector *bs;
 char *host_filename;
 char *fat_filename;
 {
-    struct DirEntry new_entry;
-    unsigned long root_dir_start;
-    unsigned long root_dir_sectors;
+    struct DirEntry new_entry, entry;
+    memset(&entry, 0, sizeof(entry));
+    memset(&new_entry, 0, sizeof(new_entry));
+    unsigned long root_dir_start, root_dir_sectors, file_size, cluster_size, original_file_size, sector, read_size;
     FILE *in_file;
     unsigned char *buffer;
-    unsigned short first_cluster, prev_cluster;
-    unsigned long file_size;
-    unsigned long cluster_size;
+    unsigned short first_cluster, prev_cluster, new_cluster;
     int i, free_entry;
-    unsigned long original_file_size;
 
     root_dir_sectors = ((bs->root_entries * 32) + (bs->bytes_per_sector - 1)) / bs->bytes_per_sector;
     root_dir_start = (bs->reserved_sectors + (bs->fat_count * bs->sectors_per_fat)) * bs->bytes_per_sector;
@@ -247,7 +243,7 @@ char *fat_filename;
 
     lseek(fd, root_dir_start, SEEK_SET);
     for (i = 0; i < bs->root_entries; i++) {
-        struct DirEntry entry;
+        entry;
         if (read(fd, &entry, sizeof(struct DirEntry)) != sizeof(struct DirEntry)) {
             perror("Error reading directory entry");
             return -1;
@@ -257,7 +253,7 @@ char *fat_filename;
             free_entry = i;
             break;
         }
-        if ((unsigned char)entry.filename[0] == 0xE5 && free_entry == -1) {
+        if (entry.filename[0] == 0xE5 && free_entry == -1) {
             free_entry = i;
         }
     }
@@ -289,7 +285,7 @@ char *fat_filename;
     prev_cluster = 0;
 
     while (file_size > 0) {
-        unsigned short new_cluster = find_free_cluster(fd, bs);
+        new_cluster = find_free_cluster(fd, bs);
         if (new_cluster == CLUSTER_FREE) {
             fprintf(stderr, "No free clusters available\n");
             break;
@@ -301,10 +297,10 @@ char *fat_filename;
             first_cluster = new_cluster;
         }
 
-        unsigned long read_size = fread(buffer, 1, cluster_size, in_file);
+        read_size = fread(buffer, 1, cluster_size, in_file);
         if (read_size <= 0) break;
 
-        unsigned long sector = get_cluster_location(bs, new_cluster);
+        sector = get_cluster_location(bs, new_cluster);
         lseek(fd, sector * bs->bytes_per_sector, SEEK_SET);
         write(fd, buffer, cluster_size);
 
@@ -339,9 +335,7 @@ int fd;
 struct BootSector *bs;
 unsigned short cluster;
 {
-    unsigned long fat_offset;
-    unsigned long fat_sector;
-    unsigned long entry_offset;
+    unsigned long fat_offset, fat_sector, entry_offset;
     unsigned char sector[512];
     unsigned short entry;
 
@@ -355,7 +349,7 @@ unsigned short cluster;
         return CLUSTER_BAD;
     }
     
-    entry = *(unsigned short*)&sector[entry_offset];
+    entry = sector[entry_offset] | (sector[entry_offset + 1] << 8);
     if (cluster & 1) entry >>= 4;
     else entry &= 0x0FFF;
     
@@ -367,8 +361,7 @@ unsigned long get_cluster_location(bs, cluster)
 struct BootSector *bs;
 unsigned short cluster;
 {
-    unsigned long root_dir_sectors;
-    unsigned long data_start;
+    unsigned long root_dir_sectors, data_start;
 
     root_dir_sectors = ((bs->root_entries * 32) + (bs->bytes_per_sector - 1)) / bs->bytes_per_sector;
     data_start = bs->reserved_sectors + (bs->fat_count * bs->sectors_per_fat) + root_dir_sectors;
@@ -382,9 +375,7 @@ struct BootSector *bs;
 unsigned short cluster;
 unsigned short value;
 {
-    unsigned long fat_offset;
-    unsigned long fat_sector;
-    unsigned long entry_offset;
+    unsigned long fat_offset, fat_sector, entry_offset;
     unsigned char sector[512];
 
     fat_offset = cluster * 3 / 2;
@@ -418,13 +409,12 @@ unsigned short find_free_cluster(fd, bs)
 int fd;
 struct BootSector *bs;
 {
-    unsigned short cluster;
-    unsigned short max_cluster;
+    unsigned short cluster, max_cluster, entry;
 
     max_cluster = bs->sectors_per_fat * bs->bytes_per_sector * 2 / 3;
     
     for (cluster = 2; cluster < max_cluster; cluster++) {
-        unsigned short entry = read_fat_entry(fd, bs, cluster);
+        entry = read_fat_entry(fd, bs, cluster);
         if (entry == CLUSTER_FREE) {
             return cluster;
         }
@@ -438,7 +428,7 @@ char *name;
 char *out;
 {
     char *dot;
-    int i, j, base_len;
+    int i, j, base_len, ext_len;
     static int counter = 1;
     
     /* Initialize with spaces */
@@ -471,7 +461,7 @@ char *out;
     
     /* -- Process extension -- */
     if (dot && dot[1]) {
-        int ext_len = 0;
+        ext_len = 0;
         for (i = 1; ext_len < 3 && dot[i]; i++) {
             if (isalnum(dot[i])) {
                 out[8 + ext_len++] = toupper(dot[i]);
@@ -500,11 +490,10 @@ struct BootSector *bs;
 char *path;
 int is_dir;
 {
-    char *last_slash;
-    char *filename;
-    char dir_path[MAX_PATH_LEN];
+    char *last_slash, *filename, dir_path[MAX_PATH_LEN];
     unsigned short parent_cluster;
     struct DirEntry new_entry;
+    memset(&new_entry, 0, sizeof(new_entry));
     unsigned long entry_offset;
 
     last_slash = strrchr(path, '/');
@@ -556,9 +545,10 @@ struct BootSector *bs;
 char *path;
 {
     struct DirEntry entry;
+    memset(&entry, 0, sizeof(entry));
     unsigned long entry_offset;
-    unsigned short parent_cluster;
-    unsigned short cluster;
+    unsigned short parent_cluster, cluster, next;
+    unsigned char marker;
 
     parent_cluster = find_file(fd, bs, path, &entry, &entry_offset);
     if (parent_cluster == (unsigned short)-1) {
@@ -574,13 +564,13 @@ char *path;
 
     cluster = le16_to_cpu(entry.first_cluster);
     while (cluster < CLUSTER_END && cluster != CLUSTER_FREE) {
-        unsigned short next = read_fat_entry(fd, bs, cluster);
+        next = read_fat_entry(fd, bs, cluster);
         update_fat(fd, bs, cluster, CLUSTER_FREE);
         cluster = next;
     }
 
     lseek(fd, entry_offset, SEEK_SET);
-    unsigned char marker = 0xE5;
+    marker = 0xE5;
     write(fd, &marker, 1);
 
     return 0;
@@ -596,10 +586,9 @@ unsigned char *data;
 unsigned long size;
 {
     struct DirEntry entry;
+    memset(&entry, 0, sizeof(entry));
     unsigned short cluster;
-    unsigned long file_size;
-    unsigned long cluster_size;
-    unsigned long bytes_remaining;
+    unsigned long file_size, sector, sector_offset, bytes_remaining, cluster_size;
 
     if (!find_file(fd, bs, path, &entry, NULL)) {
         fprintf(stderr, "File not found\n");
@@ -622,8 +611,8 @@ unsigned long size;
         bytes_remaining -= cluster_size;
     }
 
-    unsigned long sector = get_cluster_location(bs, cluster) + (bytes_remaining / bs->bytes_per_sector);
-    unsigned long sector_offset = bytes_remaining % bs->bytes_per_sector;
+    sector = get_cluster_location(bs, cluster) + (bytes_remaining / bs->bytes_per_sector);
+    sector_offset = bytes_remaining % bs->bytes_per_sector;
     
     lseek(fd, sector * bs->bytes_per_sector + sector_offset, SEEK_SET);
     write(fd, data, size);
@@ -640,6 +629,8 @@ char *path;
     unsigned short cluster;
     unsigned long sector;
     struct DirEntry entry;
+    memset(&entry, 0, sizeof(entry));
+    char name[13];
 
     cluster = resolve_path(fd, bs, path);
     if (cluster == (unsigned short)-1) {
@@ -656,9 +647,8 @@ char *path;
     while (1) {
         if (read(fd, &entry, sizeof(struct DirEntry)) != sizeof(struct DirEntry)) break;
         if (entry.filename[0] == 0x00) break;
-        if ((unsigned char)entry.filename[0] == 0xE5) continue;
+        if (entry.filename[0] == 0xE5) continue;
 
-        char name[13];
         sprintf(name, "%.8s.%.3s", entry.filename, entry.extension);
         printf("%-12s\t%lu\t%u\t0x%02X\n", 
                name,
@@ -677,13 +667,14 @@ unsigned short cluster;
 {
     unsigned long sector;
     struct DirEntry entry;
+    memset(&entry, 0, sizeof(entry));
 
     sector = get_cluster_location(bs, cluster);
     lseek(fd, sector * bs->bytes_per_sector, SEEK_SET);
     
     while (read(fd, &entry, sizeof(struct DirEntry)) == sizeof(struct DirEntry)) {
         if (entry.filename[0] == 0x00) break;
-        if ((unsigned char)entry.filename[0] == 0xE5) continue;
+        if (entry.filename[0] == 0xE5) continue;
         if (strncmp(entry.filename, ".       ", 8) == 0) continue;
         if (strncmp(entry.filename, "..      ", 8) == 0) continue;
         return 0;
@@ -699,12 +690,9 @@ char *path;
 struct DirEntry *entry;
 unsigned long *entry_offset;
 {
-    char *last_slash;
-    char *filename;
-    char dir_path[MAX_PATH_LEN];
+    char *last_slash, *filename, dir_path[MAX_PATH_LEN], name[13];
     unsigned short parent_cluster;
-    unsigned long dir_start;
-    unsigned long offset;
+    unsigned long dir_start, offset;
 
     last_slash = strrchr(path, '/');
     filename = last_slash ? last_slash + 1 : path;
@@ -726,12 +714,11 @@ unsigned long *entry_offset;
     offset = 0;
     while (read(fd, entry, sizeof(struct DirEntry)) == sizeof(struct DirEntry)) {
         if (entry->filename[0] == 0x00) break;
-        if ((unsigned char)entry->filename[0] == 0xE5) {
+        if (entry->filename[0] == 0xE5) {
             offset += sizeof(struct DirEntry);
             continue;
         }
 
-        char name[13];
         sprintf(name, "%.8s.%.3s", entry->filename, entry->extension);
         if (fat_strcasecmp(filename, name) == 0) {
             if (entry_offset) *entry_offset = dir_start + offset;
@@ -748,12 +735,12 @@ int fd;
 struct BootSector *bs;
 char *path;
 {
-    char components[MAX_COMPONENTS][13];
-    int count;
-    char path_copy[MAX_PATH_LEN];
-    char *token;
+    char components[MAX_COMPONENTS][13], name[13], path_copy[MAX_PATH_LEN], *token;
+    int count, i, found;
     unsigned short current_cluster;
-    int i;
+    unsigned long dir_start;
+    struct DirEntry entry;
+    memset(&entry, 0, sizeof(entry));
 
     if (strcmp(path, "/") == 0) return 0;
 
@@ -767,19 +754,14 @@ char *path;
 
     current_cluster = 0;
     for (i = 0; i < count; i++) {
-        int found;
-        unsigned long dir_start;
-        struct DirEntry entry;
-
         found = 0;
         dir_start = get_cluster_location(bs, current_cluster);
         lseek(fd, dir_start, SEEK_SET);
 
         while (read(fd, &entry, sizeof(struct DirEntry)) == sizeof(struct DirEntry)) {
             if (entry.filename[0] == 0x00) break;
-            if ((unsigned char)entry.filename[0] == 0xE5) continue;
+            if (entry.filename[0] == 0xE5) continue;
 
-            char name[13];
             sprintf(name, "%.8s.%.3s", entry.filename, entry.extension);
             if (strcmp(components[i], name) == 0) {
                 if (!(entry.attributes & ATTR_DIRECTORY) && i != count - 1) {
@@ -809,6 +791,8 @@ unsigned short parent_cluster;
 {
     unsigned char sector[512];
     struct DirEntry dot, dotdot;
+    memset(&dot, 0, sizeof(dot));
+    memset(&dotdot, 0, sizeof(dotdot));
     unsigned long sector_addr;
     int i;
 
@@ -842,16 +826,16 @@ int fd;
 struct BootSector *bs;
 unsigned short cluster;
 {
-    unsigned long dir_start;
-    unsigned long offset;
+    unsigned long dir_start, offset;
     struct DirEntry entry;
+    memset(&entry, 0, sizeof(entry));
 
     dir_start = get_cluster_location(bs, cluster);
     lseek(fd, dir_start, SEEK_SET);
 
     offset = 0;
     while (read(fd, &entry, sizeof(struct DirEntry)) == sizeof(struct DirEntry)) {
-        if (entry.filename[0] == 0x00 || (unsigned char)entry.filename[0] == 0xE5) {
+        if (entry.filename[0] == 0x00 || entry.filename[0] == 0xE5) {
             return dir_start + offset;
         }
         offset += sizeof(struct DirEntry);
