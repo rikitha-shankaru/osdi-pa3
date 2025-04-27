@@ -1,2 +1,38 @@
+# Executables
 fat12util
+test_fat12
+test_copyin_out
+*.exe
+*.out
+
+# Object files
 *.o
+
+# Test files
+test.img
+test_copyin.txt
+test_copyout.txt
+test_*.txt
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Editor files
+*~
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Build directories
+build/
+dist/
+debug/
+release/
+
+# System files
+.DS_Store
+Thumbs.db
