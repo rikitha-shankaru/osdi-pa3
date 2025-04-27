@@ -1,20 +1,23 @@
-# FAT12 Utility Makefile
-CC = gcc
-CFLAGS = -Wall -Wextra -std=c99
+# FAT12 Utility Makefile for MINIX 3.1
+CC = cc
+CFLAGS = -w -D_MINIX -D_KERNEL
 TARGET = fat12util
+OBJS = main.o fat12.o
 
-# Default target
 all: $(TARGET)
 
-# Build main executable
-$(TARGET): main.c fat12.c fat12.h
-	$(CC) $(CFLAGS) -o $@ main.c fat12.c
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS)
 
-# Clean build artifacts
+main.o: main.c fat12.h
+	$(CC) $(CFLAGS) -c main.c
+
+fat12.o: fat12.c fat12.h
+	$(CC) $(CFLAGS) -c fat12.c
+
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) $(OBJS)
 
-# Test with sample disk
 test: $(TARGET)
 	./$(TARGET) disk.fat list
 

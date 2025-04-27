@@ -1,156 +1,178 @@
 #include "fat12.h"
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdio.h>
 #include <string.h>
-#include <stdlib.h>
 #include <ctype.h>
+#include <stdlib.h>
 
 /* Helper: Convert little-endian 16-bit value to host byte order */
-static uint16_t le16_to_cpu(uint16_t val) {
+static unsigned short le16_to_cpu(val)
+unsigned short val;
+{
     return (val >> 8) | (val << 8);
 }
 
 /* Helper: Convert little-endian 32-bit value to host byte order */
-static uint32_t le32_to_cpu(uint32_t val) {
+static unsigned long le32_to_cpu(val)
+unsigned long val;
+{
     return ((val >> 24) & 0xff) | ((val << 8) & 0xff0000) |
            ((val >> 8) & 0xff00) | ((val << 24) & 0xff000000);
 }
 
-/*
- * Reads boot sector from disk image
- * Args:
- *   fd - File descriptor of open disk image
- *   bs - Pointer to BootSector struct to populate
- * Returns:
- *   0 on success, -1 on error
- */
-int read_boot_sector(int fd, BootSector *bs) {
-    /* Read exactly 512 bytes into boot sector struct */
-    if (read(fd, bs, sizeof(BootSector)) != sizeof(BootSector)) {
-        perror("Failed to read boot sector");
+static unsigned short cpu_to_le16(val)
+unsigned short val;
+{
+    return (val << 8) | (val >> 8);
+}
+
+static unsigned long cpu_to_le32(val) 
+unsigned long val;
+{
+    return ((val << 24) & 0xff000000) |
+           ((val << 8)  & 0x00ff0000) |
+           ((val >> 8)  & 0x0000ff00) |
+           ((val >> 24) & 0x000000ff);
+}
+
+/* Case-insensitive string comparison */
+static int fat_strcasecmp(s1, s2)
+char *s1, *s2;
+{
+    while (*s1 && *s2) {
+        if (toupper(*s1) != toupper(*s2))
+            return *s1 - *s2;
+        s1++;
+        s2++;
+    }
+    return *s1 - *s2;
+}
+
+/* Read boot sector from disk image */
+int read_boot_sector(fd, bs)
+int fd;
+struct BootSector *bs;
+{
+    if (read(fd, bs, sizeof(struct BootSector)) != sizeof(struct BootSector)) {
+        perror("Error reading boot sector");
         return -1;
     }
     
-    /* Convert multi-byte fields from little-endian to host byte order */
     bs->bytes_per_sector = le16_to_cpu(bs->bytes_per_sector);
-    bs->sectors_per_fat = le16_to_cpu(bs->sectors_per_fat);
+    bs->sectors_per_cluster = bs->sectors_per_cluster;  // uint8_t, no conversion
+    bs->reserved_sectors = le16_to_cpu(bs->reserved_sectors);
+    bs->fat_count = bs->fat_count;                     // uint8_t, no conversion
     bs->root_entries = le16_to_cpu(bs->root_entries);
-    bs->total_sectors = le16_to_cpu(bs->total_sectors);
+    bs->total_sectors_16 = le16_to_cpu(bs->total_sectors_16);
+    bs->media_type = bs->media_type;                   // uint8_t, no conversion
+    bs->sectors_per_fat = le16_to_cpu(bs->sectors_per_fat);
+    bs->sectors_per_track = le16_to_cpu(bs->sectors_per_track);
+    bs->head_count = le16_to_cpu(bs->head_count);
+    bs->hidden_sectors = le32_to_cpu(bs->hidden_sectors);
+    bs->total_sectors_32 = le32_to_cpu(bs->total_sectors_32);
+    bs->signature = le16_to_cpu(bs->signature);
     
     return 0;
 }
 
-/*
- * Lists all files in root directory
- * Args:
- *   fd - Open file descriptor of disk image
- *   bs - Pointer to initialized BootSector
- */
-void list_root_directory(int fd, BootSector *bs) {
-    /* Calculate root directory location */
-    uint32_t fat_size = bs->sectors_per_fat * bs->bytes_per_sector;
-    uint32_t root_dir_sectors = ((bs->root_entries * 32) + (bs->bytes_per_sector - 1)) / bs->bytes_per_sector;
-    uint32_t root_dir_start = (bs->reserved_sectors + (bs->fat_count * bs->sectors_per_fat)) * bs->bytes_per_sector;
+/* List root directory contents */
+int list_root_directory(fd, bs)
+int fd;
+struct BootSector *bs;
+{
+    unsigned long root_dir_start;
+    unsigned long root_dir_sectors;
+    struct DirEntry entry;
+    int i, j;
+
+    root_dir_sectors = ((bs->root_entries * 32) + (bs->bytes_per_sector - 1)) / bs->bytes_per_sector;
+    root_dir_start = (bs->reserved_sectors + (bs->fat_count * bs->sectors_per_fat)) * bs->bytes_per_sector;
     
-    /* Seek to start of root directory */
     lseek(fd, root_dir_start, SEEK_SET);
-    
-    DirEntry entry;
     printf("Type\tSize\tCluster\tName\n");
     printf("----\t----\t-------\t----\n");
-    
-    /* Read each directory entry (32 bytes each) */
-    for (int i = 0; i < bs->root_entries; i++) {
-        if (read(fd, &entry, sizeof(DirEntry)) != sizeof(DirEntry)) {
+
+    for (i = 0; i < bs->root_entries; i++)
+    {
+        if (read(fd, &entry, sizeof(struct DirEntry)) != sizeof(struct DirEntry))
+        {
             perror("Error reading directory entry");
             break;
         }
 
-        /* Skip empty or deleted entries */
-        if (entry.filename[0] == 0x00) break;  /* End of directory */
-        if (entry.filename[0] == 0xE5) continue; /* Deleted file */
+        if (entry.filename[0] == 0x00)
+            break;
+        if ((unsigned char)entry.filename[0] == 0xE5)
+            continue;
 
-        /* Format filename (8.3 format) */
-        char name[13];
-        snprintf(name, sizeof(name), "%.8s.%.3s", entry.filename, entry.extension);
-        
-        /* Print entry information */
-        printf("0x%02X\t%u\t%u\t%s\n", 
-               entry.attributes, 
+        /* Print file info */
+        printf("0x%02X\t%lu\t%u\t",
+               entry.attributes,
                le32_to_cpu(entry.file_size),
-               le16_to_cpu(entry.first_cluster),
-               name);
-    }
-}
+               le16_to_cpu(entry.first_cluster));
 
-/*
- * Reads a FAT12 cluster entry
- * Args:
- *   fd - Disk image file descriptor
- *   bs - Boot sector info
- *   cluster - Cluster number to read
- * Returns:
- *   Next cluster number in chain (or 0xFFF for end)
- */
-static uint16_t read_fat_entry(int fd, BootSector *bs, uint16_t cluster) {
-    /* FAT12 uses 12-bit entries packed into bytes */
-    uint32_t fat_offset = cluster * 3 / 2;
-    uint32_t fat_sector = bs->reserved_sectors + (fat_offset / bs->bytes_per_sector);
-    uint32_t entry_offset = fat_offset % bs->bytes_per_sector;
-    
-    /* Read containing sector */
-    lseek(fd, fat_sector * bs->bytes_per_sector, SEEK_SET);
-    uint8_t sector[bs->bytes_per_sector];
-    read(fd, sector, bs->bytes_per_sector);
-    
-    /* Extract 12-bit value */
-    uint16_t entry = *(uint16_t*)&sector[entry_offset];
-    if (cluster & 1) {
-        entry >>= 4;  /* Odd cluster uses high 12 bits */
-    } else {
-        entry &= 0x0FFF; /* Even cluster uses low 12 bits */
-    }
-    
-    return entry;
-}
-
-/*
- * Extracts file from FAT12 disk to host filesystem
- * Args:
- *   fd - Disk image file descriptor
- *   bs - Boot sector info
- *   fat_filename - Source filename in 8.3 format (e.g., "TEST.TXT")
- *   host_filename - Destination path on host (e.g., "output.txt")
- * Returns:
- *   0 on success, -1 on error
- */
-int copyout(int fd, BootSector *bs, const char *fat_filename, const char *host_filename) {
-    DirEntry entry;
-    uint32_t root_dir_start, root_dir_sectors;
-    uint16_t cluster;
-    FILE *out_file;
-    uint8_t *buffer;
-    int ret = -1;
-
-    /* Calculate root directory location */
-    root_dir_sectors = ((bs->root_entries * 32) + (bs->bytes_per_sector - 1)) / bs->bytes_per_sector;
-    root_dir_start = (bs->reserved_sectors + (bs->fat_count * bs->sectors_per_fat)) * bs->bytes_per_sector;
-
-    /* Search root directory for the file */
-    lseek(fd, root_dir_start, SEEK_SET);
-    int found = 0;
-    for (int i = 0; i < bs->root_entries; i++) {
-        if (read(fd, &entry, sizeof(DirEntry)) != sizeof(DirEntry)) {
-            perror("Error reading directory entry");
-            goto cleanup;
+        /* Print base name (trim trailing spaces) */
+        for (j = 0; j < 8 && entry.filename[j] != ' '; j++)
+        {
+            putchar(entry.filename[j]);
         }
 
-        /* Skip empty or deleted entries */
-        if (entry.filename[0] == 0x00) break;
-        if (entry.filename[0] == 0xE5) continue;
+        /* Print extension if not empty */
+        if (entry.extension[0] != ' ')
+        {
+            putchar('.');
+            for (j = 0; j < 3 && entry.extension[j] != ' '; j++)
+            {
+                putchar(entry.extension[j]);
+            }
+        }
+        putchar('\n');
+    }
 
-        /* Compare filename (case-insensitive) */
-        char entry_name[13];
-        snprintf(entry_name, sizeof(entry_name), "%.8s.%.3s", entry.filename, entry.extension);
-        if (strcasecmp(fat_filename, entry_name) == 0) {
+ return 0;
+}
+
+/* Extract file from FAT12 disk to host */
+int copyout(fd, bs, fat_filename, host_filename)
+int fd;
+struct BootSector *bs;
+char *fat_filename;
+char *host_filename;
+{
+    struct DirEntry entry;
+    unsigned long root_dir_start;
+    unsigned long root_dir_sectors;
+    unsigned short cluster;
+    FILE *out_file;
+    unsigned char *buffer;
+    unsigned long file_size;
+    unsigned long cluster_size;
+    int i, found;
+    char search_name[11];
+
+    root_dir_sectors = ((bs->root_entries * 32) + (bs->bytes_per_sector - 1)) / bs->bytes_per_sector;
+    root_dir_start = (bs->reserved_sectors + (bs->fat_count * bs->sectors_per_fat)) * bs->bytes_per_sector;
+    cluster_size = bs->bytes_per_sector * bs->sectors_per_cluster;
+    found = 0;
+
+    /* Convert search name to 8.3 format */
+    to_83_filename(fat_filename, search_name);
+
+    lseek(fd, root_dir_start, SEEK_SET);
+    for (i = 0; i < bs->root_entries; i++) {
+        if (read(fd, &entry, sizeof(struct DirEntry)) != sizeof(struct DirEntry)) {
+            perror("Error reading directory entry");
+            break;
+        }
+
+        if (entry.filename[0] == 0x00) break;
+        if ((unsigned char)entry.filename[0] == 0xE5) continue;
+
+        /* Compare raw 8.3 names (no dot) */
+        if (memcmp(entry.filename, search_name, 11) == 0) {
             found = 1;
             break;
         }
@@ -158,396 +180,441 @@ int copyout(int fd, BootSector *bs, const char *fat_filename, const char *host_f
 
     if (!found) {
         fprintf(stderr, "File not found: %s\n", fat_filename);
-        goto cleanup;
+        return -1;
     }
 
-    /* Check if it's a directory */
-    if (entry.attributes & ATTR_DIRECTORY) {
-        fprintf(stderr, "Cannot copy directories with copyout: %s\n", fat_filename);
-        goto cleanup;
-    }
-
-    /* Open output file */
     out_file = fopen(host_filename, "wb");
     if (!out_file) {
         perror("Failed to open output file");
-        goto cleanup;
+        return -1;
     }
 
-    /* Allocate buffer for cluster data */
-    uint32_t cluster_size = bs->bytes_per_sector * bs->sectors_per_cluster;
     buffer = malloc(cluster_size);
     if (!buffer) {
         perror("Memory allocation failed");
-        goto cleanup;
+        fclose(out_file);
+        return -1;
     }
 
-    /* Follow cluster chain and write data */
     cluster = le16_to_cpu(entry.first_cluster);
-    uint32_t remaining_bytes = le32_to_cpu(entry.file_size);
+    file_size = le32_to_cpu(entry.file_size);
 
-    while (cluster < CLUSTER_END && cluster != CLUSTER_FREE && remaining_bytes > 0) {
-        /* Calculate sector address for this cluster */
-        uint32_t sector = get_cluster_location(bs, cluster);
-
-        /* Read entire cluster */
+    while (cluster < CLUSTER_END && cluster != CLUSTER_FREE && file_size > 0) {
+        unsigned long sector = get_cluster_location(bs, cluster);
         lseek(fd, sector * bs->bytes_per_sector, SEEK_SET);
         if (read(fd, buffer, cluster_size) != cluster_size) {
             perror("Error reading cluster data");
-            goto cleanup;
+            break;
         }
 
-        /* Write to output file (only up to file size) */
-        uint32_t write_size = (remaining_bytes < cluster_size) ? remaining_bytes : cluster_size;
+        unsigned long write_size = (file_size < cluster_size) ? file_size : cluster_size;
         if (fwrite(buffer, 1, write_size, out_file) != write_size) {
             perror("Error writing to output file");
-            goto cleanup;
+            break;
         }
 
-        remaining_bytes -= write_size;
-
-        /* Get next cluster from FAT */
+        file_size -= write_size;
         cluster = read_fat_entry(fd, bs, cluster);
     }
 
-    ret = 0; /* Success */
-
-cleanup:
-    if (buffer) free(buffer);
-    if (out_file) fclose(out_file);
-    return ret;
+    free(buffer);
+    fclose(out_file);
+    return 0;
 }
 
-/*
- * Copies file from host to FAT12 disk
- * Args:
- *   fd - Disk image file descriptor
- *   bs - Boot sector info
- *   host_filename - Source file on host (e.g., "input.txt")
- *   fat_filename - Destination name in 8.3 format (e.g., "NEWFILE.TXT")
- * Returns:
- *   0 on success, -1 on error
- */
-int copyin(int fd, BootSector *bs, const char *host_filename, const char *fat_filename) {
-    DirEntry new_entry;
-    uint32_t root_dir_start, root_dir_sectors;
+/* Add file from host to FAT12 disk */
+int copyin(fd, bs, host_filename, fat_filename)
+int fd;
+struct BootSector *bs;
+char *host_filename;
+char *fat_filename;
+{
+    struct DirEntry new_entry;
+    unsigned long root_dir_start;
+    unsigned long root_dir_sectors;
     FILE *in_file;
-    uint8_t *buffer;
-    uint16_t first_cluster = CLUSTER_FREE, prev_cluster = CLUSTER_FREE;
-    int ret = -1;
-    uint32_t file_size;
-    int free_entry_index = -1;
+    unsigned char *buffer;
+    unsigned short first_cluster, prev_cluster;
+    unsigned long file_size;
+    unsigned long cluster_size;
+    int i, free_entry;
+    unsigned long original_file_size;
 
-    /* Calculate root directory location */
     root_dir_sectors = ((bs->root_entries * 32) + (bs->bytes_per_sector - 1)) / bs->bytes_per_sector;
     root_dir_start = (bs->reserved_sectors + (bs->fat_count * bs->sectors_per_fat)) * bs->bytes_per_sector;
+    cluster_size = bs->bytes_per_sector * bs->sectors_per_cluster;
+    free_entry = -1;
 
-    /* Check if filename already exists */
     lseek(fd, root_dir_start, SEEK_SET);
-    for (int i = 0; i < bs->root_entries; i++) {
-        DirEntry entry;
-        if (read(fd, &entry, sizeof(DirEntry)) != sizeof(DirEntry)) {
+    for (i = 0; i < bs->root_entries; i++) {
+        struct DirEntry entry;
+        if (read(fd, &entry, sizeof(struct DirEntry)) != sizeof(struct DirEntry)) {
             perror("Error reading directory entry");
-            goto cleanup;
+            return -1;
         }
 
-        /* Remember first empty slot */
-        if (entry.filename[0] == 0x00 && free_entry_index == -1) {
-            free_entry_index = i;
-            break; /* Stop at first empty entry */
+        if (entry.filename[0] == 0x00 && free_entry == -1) {
+            free_entry = i;
+            break;
         }
-
-        /* Skip deleted entries */
-        if (entry.filename[0] == 0xE5) continue;
-
-        /* Check for filename conflict */
-        char entry_name[13];
-        snprintf(entry_name, sizeof(entry_name), "%.8s.%.3s", entry.filename, entry.extension);
-        if (strcasecmp(fat_filename, entry_name) == 0) {
-            fprintf(stderr, "File already exists: %s\n", fat_filename);
-            goto cleanup;
+        if ((unsigned char)entry.filename[0] == 0xE5 && free_entry == -1) {
+            free_entry = i;
         }
     }
 
-    if (free_entry_index == -1) {
+    if (free_entry == -1) {
         fprintf(stderr, "Root directory is full\n");
-        goto cleanup;
+        return -1;
     }
 
-    /* Open input file */
     in_file = fopen(host_filename, "rb");
     if (!in_file) {
         perror("Failed to open input file");
-        goto cleanup;
+        return -1;
     }
 
-    /* Get file size */
     fseek(in_file, 0, SEEK_END);
-    file_size = ftell(in_file);
+    original_file_size = ftell(in_file);
     fseek(in_file, 0, SEEK_SET);
+    file_size = original_file_size;
 
-    /* Allocate buffer for cluster data */
-    uint32_t cluster_size = bs->bytes_per_sector * bs->sectors_per_cluster;
     buffer = malloc(cluster_size);
     if (!buffer) {
         perror("Memory allocation failed");
-        goto cleanup;
+        fclose(in_file);
+        return -1;
     }
 
-    /* Allocate clusters and write data */
-    uint32_t remaining_bytes = file_size;
-    while (remaining_bytes > 0) {
-        /* Allocate new cluster */
-        uint16_t new_cluster = find_free_cluster(fd, bs);
+    first_cluster = 0;
+    prev_cluster = 0;
+
+    while (file_size > 0) {
+        unsigned short new_cluster = find_free_cluster(fd, bs);
         if (new_cluster == CLUSTER_FREE) {
-            fprintf(stderr, "Disk is full\n");
-            goto cleanup;
+            fprintf(stderr, "No free clusters available\n");
+            break;
         }
 
-        /* Update FAT chain */
-        if (prev_cluster != CLUSTER_FREE) {
-            if (update_fat(fd, bs, prev_cluster, new_cluster) != 0) {
-                goto cleanup;
-            }
+        if (prev_cluster != 0) {
+            update_fat(fd, bs, prev_cluster, new_cluster);
         } else {
             first_cluster = new_cluster;
         }
 
-        /* Mark cluster as end of chain (temporarily) */
-        if (update_fat(fd, bs, new_cluster, CLUSTER_END) != 0) {
-            goto cleanup;
-        }
+        unsigned long read_size = fread(buffer, 1, cluster_size, in_file);
+        if (read_size <= 0) break;
 
-        /* Read data from input file */
-        uint32_t read_size = (remaining_bytes < cluster_size) ? remaining_bytes : cluster_size;
-        if (fread(buffer, 1, read_size, in_file) != read_size) {
-            perror("Error reading from input file");
-            goto cleanup;
-        }
-
-        /* Write to disk */
-        uint32_t sector = get_cluster_location(bs, new_cluster);
+        unsigned long sector = get_cluster_location(bs, new_cluster);
         lseek(fd, sector * bs->bytes_per_sector, SEEK_SET);
-        if (write(fd, buffer, cluster_size) != cluster_size) {
-            perror("Error writing to disk");
-            goto cleanup;
-        }
+        write(fd, buffer, cluster_size);
 
-        remaining_bytes -= read_size;
+        update_fat(fd, bs, new_cluster, CLUSTER_END);
         prev_cluster = new_cluster;
+        file_size -= read_size;
     }
 
-    /* Create directory entry */
-    memset(&new_entry, 0, sizeof(DirEntry));
-    
-    /* Convert to 8.3 format */
-    char name[9], ext[4];
-    if (sscanf(fat_filename, "%8[^.].%3s", name, ext) != 2) {
-        /* Handle files without extension */
-        strncpy(name, fat_filename, 8);
-        ext[0] = '\0';
-    }
-    
-    /* Pad with spaces */
-    strncpy(new_entry.filename, name, 8);
-    strncpy(new_entry.extension, ext, 3);
-    for (int i = strlen(name); i < 8; i++) new_entry.filename[i] = ' ';
-    for (int i = strlen(ext); i < 3; i++) new_entry.extension[i] = ' ';
-
-    /* Set metadata */
+    memset(&new_entry, 0, sizeof(struct DirEntry));
+    to_83_filename(fat_filename, new_entry.filename);
     new_entry.attributes = ATTR_ARCHIVE;
-    new_entry.first_cluster = htole16(first_cluster);
-    new_entry.file_size = htole32(file_size);
-    
-    /* Get current time/date (DOS format) */
+    new_entry.first_cluster = cpu_to_le16(first_cluster);
+    new_entry.file_size = cpu_to_le32(original_file_size);
     set_dos_time_date(&new_entry);
 
-    /* Write directory entry */
-    lseek(fd, root_dir_start + (free_entry_index * sizeof(DirEntry)), SEEK_SET);
-    if (write(fd, &new_entry, sizeof(DirEntry)) != sizeof(DirEntry)) {
+    lseek(fd, root_dir_start + (free_entry * sizeof(struct DirEntry)), SEEK_SET);
+    if (write(fd, &new_entry, sizeof(struct DirEntry)) != sizeof(struct DirEntry)) {
         perror("Error writing directory entry");
-        goto cleanup;
+        free(buffer);
+        fclose(in_file);
+        return -1;
     }
 
-    ret = 0; /* Success */
-
-cleanup:
-    if (buffer) free(buffer);
-    if (in_file) fclose(in_file);
-    return ret;
-}
-
-
-
-
-
-/* Lists contents of any directory (not just root) */
-int list_path(int fd, BootSector *bs, const char *path) {
-    if (strcmp(path, "/") == 0) {
-        list_root_directory(fd, bs);
-        return 0;
-    }
-
-    /* Parse path components */
-    char *components[16];
-    int count = 0;
-    char *token = strtok((char*)path, "/");
-    while (token != NULL && count < 16) {
-        components[count++] = token;
-        token = strtok(NULL, "/");
-    }
-
-    /* Start from root directory */
-    uint32_t current_cluster = 0; // 0 means root
-    DirEntry entry;
-
-    for (int i = 0; i < count; i++) {
-        bool found = false;
-        uint32_t dir_start = get_cluster_location(bs, current_cluster);
-
-        /* Search directory for component */
-        lseek(fd, dir_start, SEEK_SET);
-        while (read_directory_entry(fd, &entry)) {
-            if (entry.filename[0] == 0x00) break;
-            if (entry.filename[0] == 0xE5) continue;
-
-            char name[13];
-            to_83_filename(components[i], name);
-            char entry_name[13];
-            snprintf(entry_name, sizeof(entry_name), "%.8s.%.3s", 
-                    entry.filename, entry.extension);
-
-            if (strcasecmp(name, entry_name) == 0) {
-                if (!(entry.attributes & ATTR_DIRECTORY) && i != count - 1) {
-                    printf("Path component is not a directory: %s\n", components[i]);
-                    return -1;
-                }
-                current_cluster = le16_to_cpu(entry.first_cluster);
-                found = true;
-                break;
-            }
-        }
-
-        if (!found) {
-            printf("Path not found: %s\n", components[i]);
-            return -1;
-        }
-    }
-
-    /* List final directory */
-    list_cluster_directory(fd, bs, current_cluster);
+    free(buffer);
+    fclose(in_file);
     return 0;
 }
 
-/* Creates a new file or directory */
-int create_file(int fd, BootSector *bs, const char *path, bool is_dir) {
-    /* Split path into directory and filename */
-    char *last_slash = strrchr(path, '/');
-    char *filename = last_slash ? last_slash + 1 : (char*)path;
-    char dir_path[256] = {0};
+/* Read FAT12 cluster entry */
+unsigned short read_fat_entry(fd, bs, cluster)
+int fd;
+struct BootSector *bs;
+unsigned short cluster;
+{
+    unsigned long fat_offset;
+    unsigned long fat_sector;
+    unsigned long entry_offset;
+    unsigned char sector[512];
+    unsigned short entry;
+
+    fat_offset = cluster * 3 / 2;
+    fat_sector = bs->reserved_sectors + (fat_offset / bs->bytes_per_sector);
+    entry_offset = fat_offset % bs->bytes_per_sector;
+    
+    lseek(fd, fat_sector * bs->bytes_per_sector, SEEK_SET);
+    if (read(fd, sector, bs->bytes_per_sector) != bs->bytes_per_sector) {
+        perror("Error reading FAT sector");
+        return CLUSTER_BAD;
+    }
+    
+    entry = *(unsigned short*)&sector[entry_offset];
+    if (cluster & 1) entry >>= 4;
+    else entry &= 0x0FFF;
+    
+    return entry;
+}
+
+/* Get physical sector for cluster */
+unsigned long get_cluster_location(bs, cluster)
+struct BootSector *bs;
+unsigned short cluster;
+{
+    unsigned long root_dir_sectors;
+    unsigned long data_start;
+
+    root_dir_sectors = ((bs->root_entries * 32) + (bs->bytes_per_sector - 1)) / bs->bytes_per_sector;
+    data_start = bs->reserved_sectors + (bs->fat_count * bs->sectors_per_fat) + root_dir_sectors;
+    return data_start + (cluster - 2) * bs->sectors_per_cluster;
+}
+
+/* Update FAT entry */
+int update_fat(fd, bs, cluster, value)
+int fd;
+struct BootSector *bs;
+unsigned short cluster;
+unsigned short value;
+{
+    unsigned long fat_offset;
+    unsigned long fat_sector;
+    unsigned long entry_offset;
+    unsigned char sector[512];
+
+    fat_offset = cluster * 3 / 2;
+    fat_sector = bs->reserved_sectors + (fat_offset / bs->bytes_per_sector);
+    entry_offset = fat_offset % bs->bytes_per_sector;
+    
+    lseek(fd, fat_sector * bs->bytes_per_sector, SEEK_SET);
+    if (read(fd, sector, bs->bytes_per_sector) != bs->bytes_per_sector) {
+        perror("Error reading FAT sector");
+        return -1;
+    }
+    
+    if (cluster & 1) {
+        sector[entry_offset] = (sector[entry_offset] & 0x0F) | ((value << 4) & 0xF0);
+        sector[entry_offset+1] = (value >> 4) & 0xFF;
+    } else {
+        sector[entry_offset] = value & 0xFF;
+        sector[entry_offset+1] = (sector[entry_offset+1] & 0xF0) | ((value >> 8) & 0x0F);
+    }
+    
+    lseek(fd, fat_sector * bs->bytes_per_sector, SEEK_SET);
+    if (write(fd, sector, bs->bytes_per_sector) != bs->bytes_per_sector) {
+        perror("Error writing FAT sector");
+        return -1;
+    }
+    return 0;
+}
+
+/* Find first free cluster */
+unsigned short find_free_cluster(fd, bs)
+int fd;
+struct BootSector *bs;
+{
+    unsigned short cluster;
+    unsigned short max_cluster;
+
+    max_cluster = bs->sectors_per_fat * bs->bytes_per_sector * 2 / 3;
+    
+    for (cluster = 2; cluster < max_cluster; cluster++) {
+        unsigned short entry = read_fat_entry(fd, bs, cluster);
+        if (entry == CLUSTER_FREE) {
+            return cluster;
+        }
+    }
+    return CLUSTER_FREE;
+}
+
+/* Convert filename to 8.3 format */
+int to_83_filename(name, out)
+char *name;
+char *out;
+{
+    char *dot;
+    int i, j, base_len;
+    static int counter = 1;
+    
+    /* Initialize with spaces */
+    for (i = 0; i < 11; i++)
+        out[i] = ' ';
+    
+    /* Find last dot */
+    dot = strrchr(name, '.');
+    
+    /* -- Process base name -- */
+    /* Calculate base length without special chars */
+    base_len = 0;
+    for (i = 0; name[i] && name[i] != '.' && base_len < 8; i++) {
+        if (isalnum(name[i])) {
+            out[base_len++] = toupper(name[i]);
+        }
+    }
+    
+    /* Handle truncation */
+    if (base_len == 0) {  /* No valid chars */
+        strncpy(out, "FILE", 4);
+        base_len = 4;
+    } 
+    else if ((dot - name) > 8) {  /* Original name was long */
+        if (base_len > 6) base_len = 6;
+        out[base_len] = '~';
+        out[base_len+1] = '0' + (counter++ % 10);
+        base_len += 2;
+    }
+    
+    /* -- Process extension -- */
+    if (dot && dot[1]) {
+        int ext_len = 0;
+        for (i = 1; ext_len < 3 && dot[i]; i++) {
+            if (isalnum(dot[i])) {
+                out[8 + ext_len++] = toupper(dot[i]);
+            }
+        }
+        if (ext_len == 0) {
+            out[8] = '_';  /* Empty extension case */
+        }
+    }
+    
+    return 0;
+}
+
+/* Set DOS time/date in directory entry */
+void set_dos_time_date(entry)
+struct DirEntry *entry;
+{
+    entry->time = 0x0000;  /* 00:00:00 */
+    entry->date = 0x21C1;  /* 01-01-2020 */
+}
+
+/* Create new file or directory */
+int create_file(fd, bs, path, is_dir)
+int fd;
+struct BootSector *bs;
+char *path;
+int is_dir;
+{
+    char *last_slash;
+    char *filename;
+    char dir_path[MAX_PATH_LEN];
+    unsigned short parent_cluster;
+    struct DirEntry new_entry;
+    unsigned long entry_offset;
+
+    last_slash = strrchr(path, '/');
+    filename = last_slash ? last_slash + 1 : path;
     
     if (last_slash) {
         strncpy(dir_path, path, last_slash - path);
+        dir_path[last_slash - path] = '\0';
     } else {
         strcpy(dir_path, "/");
     }
-
-    /* Find parent directory */
-    uint32_t parent_cluster = resolve_path(fd, bs, dir_path);
-    if (parent_cluster == (uint32_t)-1) return -1;
-
-    /* Convert to 8.3 filename */
-    char fat_name[13];
-    if (!to_83_filename(filename, fat_name)) {
-        printf("Invalid filename format\n");
+    
+    parent_cluster = resolve_path(fd, bs, dir_path);
+    if (parent_cluster == (unsigned short)-1) {
+        fprintf(stderr, "Parent directory not found\n");
         return -1;
     }
 
-    /* Find free directory entry */
-    DirEntry new_entry = {0};
-    uint32_t entry_offset = find_free_entry(fd, bs, parent_cluster);
+    entry_offset = find_free_entry(fd, bs, parent_cluster);
     if (entry_offset == 0) {
-        printf("No free directory entries\n");
+        fprintf(stderr, "No free directory entries\n");
         return -1;
     }
 
-    /* Prepare new entry */
-    memset(new_entry.filename, ' ', 8);
-    memset(new_entry.extension, ' ', 3);
-    sscanf(fat_name, "%8[^.].%3s", new_entry.filename, new_entry.extension);
-
+    memset(&new_entry, 0, sizeof(struct DirEntry));
+    to_83_filename(filename, new_entry.filename);
+    
     new_entry.attributes = is_dir ? ATTR_DIRECTORY : ATTR_ARCHIVE;
-    new_entry.first_cluster = htole16(find_free_cluster(fd, bs));
-    new_entry.file_size = 0;
-
-    /* Write directory entry */
+    new_entry.first_cluster = find_free_cluster(fd, bs);
+    set_dos_time_date(&new_entry);
+    
     lseek(fd, entry_offset, SEEK_SET);
-    write(fd, &new_entry, sizeof(DirEntry));
-
-    /* Initialize directory cluster if needed */
-    if (is_dir) {
-        initialize_directory_cluster(fd, bs, le16_to_cpu(new_entry.first_cluster), 
-                                  parent_cluster);
+    if (write(fd, &new_entry, sizeof(struct DirEntry)) != sizeof(struct DirEntry)) {
+        perror("Error writing directory entry");
+        return -1;
     }
-
+    
+    if (is_dir) {
+        initialize_directory_cluster(fd, bs, new_entry.first_cluster, parent_cluster);
+    }
+    
     return 0;
 }
 
-/* Deletes a file or empty directory */
-int delete_file(int fd, BootSector *bs, const char *path) {
-    /* Resolve path to get directory entry */
-    DirEntry entry;
-    uint32_t entry_offset;
-    uint32_t parent_cluster = find_file_entry(fd, bs, path, &entry, &entry_offset);
-    
-    if (parent_cluster == (uint32_t)-1) {
-        printf("File not found\n");
+/* Delete file or empty directory */
+int delete_file(fd, bs, path)
+int fd;
+struct BootSector *bs;
+char *path;
+{
+    struct DirEntry entry;
+    unsigned long entry_offset;
+    unsigned short parent_cluster;
+    unsigned short cluster;
+
+    parent_cluster = find_file(fd, bs, path, &entry, &entry_offset);
+    if (parent_cluster == (unsigned short)-1) {
+        fprintf(stderr, "File not found\n");
         return -1;
     }
 
-    /* Check if directory is empty */
     if ((entry.attributes & ATTR_DIRECTORY) && 
         !is_directory_empty(fd, bs, le16_to_cpu(entry.first_cluster))) {
-        printf("Directory not empty\n");
+        fprintf(stderr, "Directory not empty\n");
         return -1;
     }
 
-    /* Free clusters in FAT */
-    uint16_t cluster = le16_to_cpu(entry.first_cluster);
+    cluster = le16_to_cpu(entry.first_cluster);
     while (cluster < CLUSTER_END && cluster != CLUSTER_FREE) {
-        uint16_t next = read_fat_entry(fd, bs, cluster);
+        unsigned short next = read_fat_entry(fd, bs, cluster);
         update_fat(fd, bs, cluster, CLUSTER_FREE);
         cluster = next;
     }
 
-    /* Mark directory entry as deleted */
     lseek(fd, entry_offset, SEEK_SET);
-    uint8_t marker = 0xE5;
+    unsigned char marker = 0xE5;
     write(fd, &marker, 1);
 
     return 0;
 }
 
-/* Modifies file content directly on disk */
-int edit_file(int fd, BootSector *bs, const char *path, 
-             uint32_t offset, uint8_t *data, uint32_t size) {
-    /* Find file and verify size */
-    DirEntry entry;
-    if (!find_file(fd, bs, path, &entry)) {
-        printf("File not found\n");
+/* Edit file content */
+int edit_file(fd, bs, path, offset, data, size)
+int fd;
+struct BootSector *bs;
+char *path;
+unsigned long offset;
+unsigned char *data;
+unsigned long size;
+{
+    struct DirEntry entry;
+    unsigned short cluster;
+    unsigned long file_size;
+    unsigned long cluster_size;
+    unsigned long bytes_remaining;
+
+    if (!find_file(fd, bs, path, &entry, NULL)) {
+        fprintf(stderr, "File not found\n");
         return -1;
     }
 
-    uint32_t file_size = le32_to_cpu(entry.file_size);
+    file_size = le32_to_cpu(entry.file_size);
     if (offset + size > file_size) {
-        printf("Edit exceeds file size\n");
+        fprintf(stderr, "Edit exceeds file size\n");
         return -1;
     }
 
-    /* Traverse clusters to find target offset */
-    uint32_t bytes_remaining = offset;
-    uint16_t cluster = le16_to_cpu(entry.first_cluster);
-    uint32_t cluster_size = bs->bytes_per_sector * bs->sectors_per_cluster;
+    cluster = le16_to_cpu(entry.first_cluster);
+    cluster_size = bs->bytes_per_sector * bs->sectors_per_cluster;
+    bytes_remaining = offset;
 
     while (bytes_remaining >= cluster_size) {
         cluster = read_fat_entry(fd, bs, cluster);
@@ -555,9 +622,8 @@ int edit_file(int fd, BootSector *bs, const char *path,
         bytes_remaining -= cluster_size;
     }
 
-    /* Write data */
-    uint32_t sector = get_cluster_location(bs, cluster) + (bytes_remaining / bs->bytes_per_sector);
-    uint32_t sector_offset = bytes_remaining % bs->bytes_per_sector;
+    unsigned long sector = get_cluster_location(bs, cluster) + (bytes_remaining / bs->bytes_per_sector);
+    unsigned long sector_offset = bytes_remaining % bs->bytes_per_sector;
     
     lseek(fd, sector * bs->bytes_per_sector + sector_offset, SEEK_SET);
     write(fd, data, size);
@@ -565,3 +631,230 @@ int edit_file(int fd, BootSector *bs, const char *path,
     return 0;
 }
 
+/* List directory contents */
+int list_path(fd, bs, path)
+int fd;
+struct BootSector *bs;
+char *path;
+{
+    unsigned short cluster;
+    unsigned long sector;
+    struct DirEntry entry;
+
+    cluster = resolve_path(fd, bs, path);
+    if (cluster == (unsigned short)-1) {
+        fprintf(stderr, "Path not found\n");
+        return -1;
+    }
+
+    sector = get_cluster_location(bs, cluster);
+    lseek(fd, sector * bs->bytes_per_sector, SEEK_SET);
+
+    printf("Name\t\tSize\tCluster\tAttr\n");
+    printf("----\t\t----\t-------\t----\n");
+
+    while (1) {
+        if (read(fd, &entry, sizeof(struct DirEntry)) != sizeof(struct DirEntry)) break;
+        if (entry.filename[0] == 0x00) break;
+        if ((unsigned char)entry.filename[0] == 0xE5) continue;
+
+        char name[13];
+        sprintf(name, "%.8s.%.3s", entry.filename, entry.extension);
+        printf("%-12s\t%lu\t%u\t0x%02X\n", 
+               name,
+               le32_to_cpu(entry.file_size),
+               le16_to_cpu(entry.first_cluster),
+               entry.attributes);
+    }
+    return 0;
+}
+
+/* Check if directory is empty */
+int is_directory_empty(fd, bs, cluster)
+int fd;
+struct BootSector *bs;
+unsigned short cluster;
+{
+    unsigned long sector;
+    struct DirEntry entry;
+
+    sector = get_cluster_location(bs, cluster);
+    lseek(fd, sector * bs->bytes_per_sector, SEEK_SET);
+    
+    while (read(fd, &entry, sizeof(struct DirEntry)) == sizeof(struct DirEntry)) {
+        if (entry.filename[0] == 0x00) break;
+        if ((unsigned char)entry.filename[0] == 0xE5) continue;
+        if (strncmp(entry.filename, ".       ", 8) == 0) continue;
+        if (strncmp(entry.filename, "..      ", 8) == 0) continue;
+        return 0;
+    }
+    return 1;
+}
+
+/* Find file entry by path */
+int find_file(fd, bs, path, entry, entry_offset)
+int fd;
+struct BootSector *bs;
+char *path;
+struct DirEntry *entry;
+unsigned long *entry_offset;
+{
+    char *last_slash;
+    char *filename;
+    char dir_path[MAX_PATH_LEN];
+    unsigned short parent_cluster;
+    unsigned long dir_start;
+    unsigned long offset;
+
+    last_slash = strrchr(path, '/');
+    filename = last_slash ? last_slash + 1 : path;
+    
+    if (last_slash) {
+        strncpy(dir_path, path, last_slash - path);
+    } else {
+        strcpy(dir_path, "/");
+    }
+
+    parent_cluster = resolve_path(fd, bs, dir_path);
+    if (parent_cluster == (unsigned short)-1) {
+        return -1;
+    }
+
+    dir_start = get_cluster_location(bs, parent_cluster);
+    lseek(fd, dir_start, SEEK_SET);
+
+    offset = 0;
+    while (read(fd, entry, sizeof(struct DirEntry)) == sizeof(struct DirEntry)) {
+        if (entry->filename[0] == 0x00) break;
+        if ((unsigned char)entry->filename[0] == 0xE5) {
+            offset += sizeof(struct DirEntry);
+            continue;
+        }
+
+        char name[13];
+        sprintf(name, "%.8s.%.3s", entry->filename, entry->extension);
+        if (fat_strcasecmp(filename, name) == 0) {
+            if (entry_offset) *entry_offset = dir_start + offset;
+            return parent_cluster;
+        }
+        offset += sizeof(struct DirEntry);
+    }
+    return -1;
+}
+
+/* Resolve path to cluster number */
+int resolve_path(fd, bs, path)
+int fd;
+struct BootSector *bs;
+char *path;
+{
+    char components[MAX_COMPONENTS][13];
+    int count;
+    char path_copy[MAX_PATH_LEN];
+    char *token;
+    unsigned short current_cluster;
+    int i;
+
+    if (strcmp(path, "/") == 0) return 0;
+
+    strncpy(path_copy, path, MAX_PATH_LEN);
+    token = strtok(path_copy, "/");
+    count = 0;
+    while (token && count < MAX_COMPONENTS) {
+        to_83_filename(token, components[count++]);
+        token = strtok(NULL, "/");
+    }
+
+    current_cluster = 0;
+    for (i = 0; i < count; i++) {
+        int found;
+        unsigned long dir_start;
+        struct DirEntry entry;
+
+        found = 0;
+        dir_start = get_cluster_location(bs, current_cluster);
+        lseek(fd, dir_start, SEEK_SET);
+
+        while (read(fd, &entry, sizeof(struct DirEntry)) == sizeof(struct DirEntry)) {
+            if (entry.filename[0] == 0x00) break;
+            if ((unsigned char)entry.filename[0] == 0xE5) continue;
+
+            char name[13];
+            sprintf(name, "%.8s.%.3s", entry.filename, entry.extension);
+            if (strcmp(components[i], name) == 0) {
+                if (!(entry.attributes & ATTR_DIRECTORY) && i != count - 1) {
+                    fprintf(stderr, "Not a directory: %s\n", components[i]);
+                    return -1;
+                }
+                current_cluster = le16_to_cpu(entry.first_cluster);
+                found = 1;
+                break;
+            }
+        }
+
+        if (!found) {
+            fprintf(stderr, "Path component not found: %s\n", components[i]);
+            return -1;
+        }
+    }
+    return current_cluster;
+}
+
+/* Initialize new directory cluster */
+int initialize_directory_cluster(fd, bs, cluster, parent_cluster)
+int fd;
+struct BootSector *bs;
+unsigned short cluster;
+unsigned short parent_cluster;
+{
+    unsigned char sector[512];
+    struct DirEntry dot, dotdot;
+    unsigned long sector_addr;
+    int i;
+
+    sector_addr = get_cluster_location(bs, cluster);
+    memset(sector, 0, sizeof(sector));
+
+    memset(&dot, 0, sizeof(struct DirEntry));
+    strncpy(dot.filename, ".       ", 8);
+    dot.attributes = ATTR_DIRECTORY;
+    dot.first_cluster = cluster;
+
+    memset(&dotdot, 0, sizeof(struct DirEntry));
+    strncpy(dotdot.filename, "..      ", 8);
+    dotdot.attributes = ATTR_DIRECTORY;
+    dotdot.first_cluster = parent_cluster;
+
+    lseek(fd, sector_addr * bs->bytes_per_sector, SEEK_SET);
+    write(fd, &dot, sizeof(struct DirEntry));
+    write(fd, &dotdot, sizeof(struct DirEntry));
+
+    for (i = 2 * sizeof(struct DirEntry); i < bs->bytes_per_sector; i += sizeof(struct DirEntry)) {
+        write(fd, sector, sizeof(struct DirEntry));
+    }
+
+    return 0;
+}
+
+/* Find free directory entry */
+int find_free_entry(fd, bs, cluster)
+int fd;
+struct BootSector *bs;
+unsigned short cluster;
+{
+    unsigned long dir_start;
+    unsigned long offset;
+    struct DirEntry entry;
+
+    dir_start = get_cluster_location(bs, cluster);
+    lseek(fd, dir_start, SEEK_SET);
+
+    offset = 0;
+    while (read(fd, &entry, sizeof(struct DirEntry)) == sizeof(struct DirEntry)) {
+        if (entry.filename[0] == 0x00 || (unsigned char)entry.filename[0] == 0xE5) {
+            return dir_start + offset;
+        }
+        offset += sizeof(struct DirEntry);
+    }
+    return 0;
+}

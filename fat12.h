@@ -1,87 +1,105 @@
 #ifndef FAT12_H
 #define FAT12_H
 
-#include <stdint.h>
-#include <stdio.h>
-#include <unistd.h>
+/* Standard includes for MINIX 3.1 */
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <fcntl.h>
-#include <stdbool.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
 
-/* File attribute masks */
-#define ATTR_READ_ONLY  0x01
-#define ATTR_HIDDEN     0x02
-#define ATTR_SYSTEM     0x04
-#define ATTR_VOLUME_ID  0x08
-#define ATTR_DIRECTORY  0x10
-#define ATTR_ARCHIVE    0x20
+/* FAT12 Constants */
+#define SECTOR_SIZE 512
+#define DIR_ENTRY_SIZE 32
+#define FAT12_ENTRY_SIZE 12
+#define ROOT_DIR_SECTOR 19
+#define FAT1_SECTOR 1
+#define FAT2_SECTOR 10
 
-/* Special cluster values */
-#define CLUSTER_FREE    0x000
-#define CLUSTER_BAD     0xFF7
-#define CLUSTER_END     0xFF8
+/* Cluster markers */
+#define CLUSTER_FREE 0x000
+#define CLUSTER_RESERVED_MIN 0xFF0
+#define CLUSTER_RESERVED_MAX 0xFF6
+#define CLUSTER_BAD 0xFF7
+#define CLUSTER_END_MIN 0xFF8
+#define CLUSTER_END_MAX 0xFFF
+#define CLUSTER_END CLUSTER_END_MAX
 
-/* 
- * Boot Sector Structure (512 bytes)
- * - Contains critical disk parameters
- * - #pragma pack ensures no compiler padding between fields
- */
-#pragma pack(push, 1)
-typedef struct {
-    uint8_t  jump[3];          /* x86 jump instruction (usually 0xEB, 0x3C, 0x90) */
-    char     oem[8];           /* OEM identifier (e.g., "MSDOS5.0") */
-    uint16_t bytes_per_sector; /* Typically 512 (little-endian) */
-    uint8_t  sectors_per_cluster; /* Usually 1 for floppies */
-    uint16_t reserved_sectors; /* Sectors before first FAT (usually 1) */
-    uint8_t  fat_count;        /* Number of FAT copies (usually 2) */
-    uint16_t root_entries;     /* Max root directory entries (usually 224) */
-    uint16_t total_sectors;    /* Total sectors if < 65535 (little-endian) */
-    uint8_t  media_descriptor; /* 0xF0 for removable media */
-    uint16_t sectors_per_fat;  /* Sectors occupied by one FAT */
-    uint16_t sectors_per_track; /* For physical disk geometry */
-    uint16_t head_count;       /* Number of heads */
-    uint32_t hidden_sectors;   /* Sectors before partition (usually 0) */
-    uint32_t total_sectors_large; /* Used if total_sectors == 0 */
-    uint8_t  drive_number;     /* BIOS drive number (0x00 for floppies) */
-    uint8_t  reserved;         /* Unused */
-    uint8_t  boot_signature;   /* Should be 0x29 for extended boot record */
-    uint32_t volume_id;        /* Serial number */
-    char     volume_label[11]; /* Disk label (space-padded) */
-    char     filesystem_type[8]; /* "FAT12   " (space-padded) */
-} BootSector;
-#pragma pack(pop)
+/* Filesystem limits */
+#define MAX_FILENAME_LEN 8
+#define MAX_EXT_LEN 3
+#define MAX_PATH_LEN 256
+#define MAX_DIR_ENTRIES 224
+#define MAX_COMPONENTS 16
 
-/*
- * Directory Entry Structure (32 bytes)
- * - Represents one file/subdirectory in root directory
- */
-#pragma pack(push, 1)
-typedef struct {
-    char     filename[8];      /* File name (space-padded) */
-    char     extension[3];     /* File extension (space-padded) */
-    uint8_t  attributes;       /* File attributes (see below) */
-    uint8_t  reserved[10];     /* Unused in FAT12 */
-    uint16_t time;             /* Last write time (HH:MM:SS packed) */
-    uint16_t date;             /* Last write date (YYYY-MM-DD packed) */
-    uint16_t first_cluster;    /* Starting cluster number (little-endian) */
-    uint32_t file_size;        /* File size in bytes (little-endian) */
-} DirEntry;
-#pragma pack(pop)
+/* File attributes */
+#define ATTR_READ_ONLY 0x01
+#define ATTR_HIDDEN 0x02
+#define ATTR_SYSTEM 0x04
+#define ATTR_VOLUME_ID 0x08
+#define ATTR_DIRECTORY 0x10
+#define ATTR_ARCHIVE 0x20
+#define ATTR_LONG_NAME 0x0F
 
-/* Function prototypes */
-int read_boot_sector(int fd, BootSector *bs);
-void list_root_directory(int fd, BootSector *bs);
-int copyout(int fd, BootSector *bs, const char *fat_filename, const char *host_filename);
-int copyin(int fd, BootSector *bs, const char *host_filename, const char *fat_filename);
+/* Boot Sector structure */
+struct BootSector {
+    char jump[3];
+    char oem[8];
+    unsigned short bytes_per_sector;
+    unsigned char sectors_per_cluster;
+    unsigned short reserved_sectors;
+    unsigned char fat_count;
+    unsigned short root_entries;
+    unsigned short total_sectors_16;
+    unsigned char media_type;
+    unsigned short sectors_per_fat;
+    unsigned short sectors_per_track;
+    unsigned short head_count;
+    unsigned long hidden_sectors;
+    unsigned long total_sectors_32;
+    unsigned char drive_number;
+    unsigned char reserved;
+    unsigned char boot_signature;
+    unsigned long volume_id;
+    char volume_label[11];
+    char fs_type[8];
+    char boot_code[448];
+    unsigned short signature;
+};
 
-int create_file(int fd, BootSector *bs, const char *path, bool is_dir);
-int delete_file(int fd, BootSector *bs, const char *path);
-int edit_file(int fd, BootSector *bs, const char *path, uint32_t offset, uint8_t *data, uint32_t size);
-int list_path(int fd, BootSector *bs, const char *path);
+/* Directory Entry structure */
+struct DirEntry {
+    char filename[8];
+    char extension[3];
+    unsigned char attributes;
+    unsigned char reserved[10];
+    unsigned short time;
+    unsigned short date;
+    unsigned short first_cluster;
+    unsigned long file_size;
+};
 
-/* Helper functions */
-uint16_t find_free_cluster(int fd, BootSector *bs);
-int update_fat(int fd, BootSector *bs, uint16_t cluster, uint16_t value);
-char* to_83_filename(const char *name, char *out);
+/* Change all function declarations in fat12.h to K&R style */
+int read_boot_sector();
+int list_root_directory();
+int copyout();
+int copyin();
+unsigned short read_fat_entry();
+unsigned long get_cluster_location();
+int update_fat();
+unsigned short find_free_cluster();
+int to_83_filename();
+void set_dos_time_date();
+int create_file();
+int delete_file();
+int edit_file();
+int list_path();
+int is_directory_empty();
+int find_file();
+int resolve_path();
+int initialize_directory_cluster();
+int find_free_entry();
 
-#endif // FAT12_H
-
+#endif /* FAT12_H */
