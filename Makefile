@@ -22,6 +22,6 @@ main.o: main.c fat12.h
 
 clean:
 	rm -f $(OBJS)
-	rm -f *.o fat12
+	rm -f *.o fat12 *.txt
 
 .PHONY: all clean

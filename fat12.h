@@ -91,6 +91,7 @@ unsigned long get_cluster_location();
 int update_fat();
 unsigned short find_free_cluster();
 int to_83_filename();
+int from_83_filename();
 void set_dos_time_date();
 int create_file();
 int delete_file();

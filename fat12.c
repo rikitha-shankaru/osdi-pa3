@@ -15,53 +15,178 @@
 #define DEBUG_PRINT(fmt, ...) \
     do { if (DEBUG) fprintf(stderr, "DEBUG: " fmt "\n", ##__VA_ARGS__); } while (0)
 
+/* Forward declarations */
+static int fat_strcasecmp(char *s1, char *s2);
+static int compare_dir_entry(struct DirEntry *entry, char *name);
+
 /* Helper: Convert little-endian 16-bit value to host byte order */
 static unsigned short le16_to_cpu(val)
 unsigned short val;
 {
-    return ((val & 0xFF) << 8) | ((val >> 8) & 0xFF);
+    return ((val & 0xFF00) >> 8) | ((val & 0xFF) << 8);
 }
 
 /* Helper: Convert little-endian 32-bit value to host byte order */
 static unsigned long le32_to_cpu(val)
 unsigned long val;
 {
-    return ((val & 0xFF) << 24) |
-           ((val & 0xFF00) << 8) |
-           ((val & 0xFF0000) >> 8) |
-           ((val & 0xFF000000) >> 24);
+    return ((val & 0xFF000000) >> 24) |
+           ((val & 0x00FF0000) >> 8) |
+           ((val & 0x0000FF00) << 8) |
+           ((val & 0x000000FF) << 24);
 }
 
 /* Helper: Convert host byte order to little-endian 16-bit value */
 static unsigned short cpu_to_le16(val)
 unsigned short val;
 {
-    return ((val & 0xFF) << 8) | ((val >> 8) & 0xFF);
+    return ((val & 0xFF00) >> 8) | ((val & 0xFF) << 8);
 }
 
 /* Helper: Convert host byte order to little-endian 32-bit value */
 static unsigned long cpu_to_le32(val) 
 unsigned long val;
 {
-    return ((val & 0xFF) << 24) |
-           ((val & 0xFF00) << 8) |
-           ((val & 0xFF0000) >> 8) |
-           ((val & 0xFF000000) >> 24);
+    return ((val & 0xFF000000) >> 24) |
+           ((val & 0x00FF0000) >> 8) |
+           ((val & 0x0000FF00) << 8) |
+           ((val & 0x000000FF) << 24);
 }
 
-/* Case-insensitive string comparison */
+/* Case-insensitive string comparison for 8.3 filenames */
 static int fat_strcasecmp(s1, s2)
 char *s1, *s2;
 {
-    while (*s1 && *s2) {
-        char c1 = toupper((unsigned char)*s1);
-        char c2 = toupper((unsigned char)*s2);
+    int i;
+    
+    /* Compare base name (8 chars) */
+    for (i = 0; i < 8; i++) {
+        char c1 = toupper((unsigned char)s1[i]);
+        char c2 = toupper((unsigned char)s2[i]);
         if (c1 != c2)
             return c1 - c2;
-        s1++;
-        s2++;
     }
-    return toupper((unsigned char)*s1) - toupper((unsigned char)*s2);
+    
+    /* Compare extension (3 chars) */
+    for (i = 0; i < 3; i++) {
+        char c1 = toupper((unsigned char)s1[8 + i]);
+        char c2 = toupper((unsigned char)s2[8 + i]);
+        if (c1 != c2)
+            return c1 - c2;
+    }
+    
+    return 0;
+}
+
+/* Compare directory entry with 8.3 filename */
+static int compare_dir_entry(entry, name)
+struct DirEntry *entry;
+char *name;
+{
+    char entry_name[11];
+    
+    /* Construct entry name */
+    memcpy(entry_name, entry->filename, 8);
+    memcpy(entry_name + 8, entry->extension, 3);
+    
+    return fat_strcasecmp(entry_name, name);
+}
+
+/* Convert filename to 8.3 format */
+int to_83_filename(name, out)
+char *name;
+char *out;
+{
+    char *dot;
+    int i, base_len, ext_len;
+    static int counter = 1;
+    
+    /* Initialize with spaces */
+    for (i = 0; i < 11; i++)
+        out[i] = ' ';
+    
+    /* Find last dot */
+    dot = strrchr(name, '.');
+    
+    /* -- Process base name -- */
+    base_len = 0;
+    for (i = 0; name[i] && name[i] != '.' && base_len < 8; i++) {
+        /* Skip leading spaces */
+        if (base_len == 0 && isspace(name[i]))
+            continue;
+            
+        /* Convert to uppercase and handle special chars */
+        if (isalnum(name[i])) {
+            out[base_len++] = toupper(name[i]);
+        } else if (name[i] == '_' || name[i] == '-') {
+            out[base_len++] = '_';
+        }
+    }
+    
+    /* Handle truncation */
+    if (base_len == 0) {  /* No valid chars */
+        memcpy(out, "FILE", 4);
+        base_len = 4;
+    } 
+    else if ((dot - name) > 8) {  /* Original name was long */
+        if (base_len > 6) base_len = 6;
+        out[base_len] = '~';
+        out[base_len+1] = '0' + (counter++ % 10);
+        base_len += 2;
+    }
+    
+    /* -- Process extension -- */
+    if (dot && dot[1]) {
+        ext_len = 0;
+        for (i = 1; ext_len < 3 && dot[i]; i++) {
+            /* Skip spaces in extension */
+            if (isspace(dot[i]))
+                continue;
+                
+            /* Convert to uppercase and handle special chars */
+            if (isalnum(dot[i])) {
+                out[8 + ext_len++] = toupper(dot[i]);
+            } else if (dot[i] == '_' || dot[i] == '-') {
+                out[8 + ext_len++] = '_';
+            }
+        }
+    }
+    
+    DEBUG_PRINT("Converted filename: %.8s.%.3s", out, out + 8);
+    return 0;
+}
+
+/* Convert 8.3 filename to normal format */
+int from_83_filename(name, out)
+char *name;
+char *out;
+{
+    int i, j;
+    
+    /* Copy base name */
+    for (i = 0; i < 8 && name[i] != ' '; i++) {
+        out[i] = name[i];
+    }
+    
+    /* Add extension if present */
+    if (name[8] != ' ') {
+        out[i++] = '.';
+        for (j = 8; j < 11 && name[j] != ' '; j++) {
+            out[i++] = name[j];
+        }
+    }
+    
+    out[i] = '\0';
+    DEBUG_PRINT("Converted from 8.3: %s", out);
+    return 0;
+}
+
+/* Set DOS time/date in directory entry */
+void set_dos_time_date(entry)
+struct DirEntry *entry;
+{
+    entry->time = 0x0000;  /* 00:00:00 */
+    entry->date = 0x21C1;  /* 01-01-2020 */
 }
 
 /* Read boot sector from disk image */
@@ -158,10 +283,13 @@ struct BootSector *bs;
     int i, j;
     unsigned long root_dir_start;
     struct DirEntry entry;
+    unsigned char buffer[32];
 
     memset(&entry, 0, sizeof(entry));
 
     root_dir_start = (bs->reserved_sectors + (bs->fat_count * bs->sectors_per_fat)) * bs->bytes_per_sector;
+    
+    DEBUG_PRINT("Reading root directory at sector %lu", root_dir_start / bs->bytes_per_sector);
     
     if (lseek(fd, root_dir_start, SEEK_SET) != root_dir_start) {
         perror("Error seeking to root directory");
@@ -172,25 +300,62 @@ struct BootSector *bs;
     printf("----\t----\t-------\t----\n");
 
     for (i = 0; i < bs->root_entries; i++) {
-        if (read(fd, &entry, sizeof(struct DirEntry)) != sizeof(struct DirEntry)) {
+        if (read(fd, buffer, 32) != 32) {
             perror("Error reading directory entry");
             return -1;
         }
 
-        if (entry.filename[0] == 0x00)
+        /* Copy filename and extension */
+        memcpy(entry.filename, buffer, 8);
+        memcpy(entry.extension, buffer + 8, 3);
+        entry.attributes = buffer[11];
+        memcpy(entry.reserved, buffer + 12, 10);
+        
+        /* Convert time and date from little-endian */
+        entry.time = (buffer[23] << 8) | buffer[22];
+        entry.date = (buffer[25] << 8) | buffer[24];
+        
+        /* Convert first cluster and file size from little-endian */
+        entry.first_cluster = (buffer[27] << 8) | buffer[26];
+        entry.file_size = ((unsigned long)buffer[31] << 24) |
+                         ((unsigned long)buffer[30] << 16) |
+                         ((unsigned long)buffer[29] << 8) |
+                         buffer[28];
+
+        DEBUG_PRINT("Raw entry %d: %.8s.%.3s, attr=0x%02X, cluster=%u (0x%04X), size=%lu (0x%08lX)",
+                   i, buffer, buffer + 8,
+                   buffer[11],
+                   (buffer[27] << 8) | buffer[26],
+                   (buffer[27] << 8) | buffer[26],
+                   ((unsigned long)buffer[31] << 24) |
+                   ((unsigned long)buffer[30] << 16) |
+                   ((unsigned long)buffer[29] << 8) |
+                   buffer[28],
+                   ((unsigned long)buffer[31] << 24) |
+                   ((unsigned long)buffer[30] << 16) |
+                   ((unsigned long)buffer[29] << 8) |
+                   buffer[28]);
+
+        if (entry.filename[0] == 0x00) {
+            DEBUG_PRINT("End of directory");
             break;
-        if (entry.filename[0] == 0xE5)
+        }
+        if (entry.filename[0] == 0xE5) {
+            DEBUG_PRINT("Deleted entry");
             continue;
+        }
 
         /* Skip volume label */
-        if (entry.attributes & ATTR_VOLUME_ID)
+        if (entry.attributes & ATTR_VOLUME_ID) {
+            DEBUG_PRINT("Skipping volume label");
             continue;
+        }
 
         /* Print file info */
         printf("0x%02X\t%lu\t%u\t",
                entry.attributes,
-               le32_to_cpu(entry.file_size),
-               le16_to_cpu(entry.first_cluster));
+               entry.file_size,
+               entry.first_cluster);
 
         /* Print base name (trim trailing spaces) */
         for (j = 0; j < 8 && entry.filename[j] != ' '; j++) {
@@ -221,9 +386,12 @@ char *host_filename;
     unsigned long root_dir_start, file_size, cluster_size, sector, write_size;
     unsigned short cluster;
     FILE *out_file;
-    unsigned char *buffer;
+    unsigned char *cluster_buffer;
     int i, found;
     char search_name[11];
+    unsigned char dir_buffer[32];
+
+    DEBUG_PRINT("Copying file %s to %s", fat_filename, host_filename);
 
     memset(&entry, 0, sizeof(entry));
 
@@ -240,19 +408,44 @@ char *host_filename;
     }
 
     for (i = 0; i < bs->root_entries; i++) {
-        if (read(fd, &entry, sizeof(struct DirEntry)) != sizeof(struct DirEntry)) {
+        if (read(fd, dir_buffer, 32) != 32) {
             perror("Error reading directory entry");
             return -1;
         }
+
+        /* Copy filename and extension */
+        memcpy(entry.filename, dir_buffer, 8);
+        memcpy(entry.extension, dir_buffer + 8, 3);
+        entry.attributes = dir_buffer[11];
+        memcpy(entry.reserved, dir_buffer + 12, 10);
+        
+        /* Convert time and date from little-endian */
+        entry.time = (dir_buffer[23] << 8) | dir_buffer[22];
+        entry.date = (dir_buffer[25] << 8) | dir_buffer[24];
+        
+        /* Convert first cluster and file size from little-endian */
+        entry.first_cluster = (dir_buffer[27] << 8) | dir_buffer[26];
+        entry.file_size = ((unsigned long)dir_buffer[31] << 24) |
+                         ((unsigned long)dir_buffer[30] << 16) |
+                         ((unsigned long)dir_buffer[29] << 8) |
+                         dir_buffer[28];
+
+        DEBUG_PRINT("Raw entry %d: %.8s.%.3s, attr=0x%02X, cluster=%u, size=%lu",
+                   i, dir_buffer, dir_buffer + 8,
+                   dir_buffer[11],
+                   (dir_buffer[27] << 8) | dir_buffer[26],
+                   ((unsigned long)dir_buffer[31] << 24) |
+                   ((unsigned long)dir_buffer[30] << 16) |
+                   ((unsigned long)dir_buffer[29] << 8) |
+                   dir_buffer[28]);
 
         if (entry.filename[0] == 0x00)
             break;
         if (entry.filename[0] == 0xE5)
             continue;
 
-        /* Compare raw 8.3 names (no dot) */
-        if (memcmp(entry.filename, search_name, 8) == 0 && 
-            memcmp(entry.extension, search_name + 8, 3) == 0) {
+        /* Compare using case-insensitive comparison */
+        if (compare_dir_entry(&entry, search_name) == 0) {
             found = 1;
             break;
         }
@@ -269,37 +462,40 @@ char *host_filename;
         return -1;
     }
 
-    buffer = malloc(cluster_size);
-    if (!buffer) {
+    cluster_buffer = malloc(cluster_size);
+    if (!cluster_buffer) {
         perror("Memory allocation failed");
         fclose(out_file);
         return -1;
     }
 
-    cluster = le16_to_cpu(entry.first_cluster);
-    file_size = le32_to_cpu(entry.file_size);
+    cluster = entry.first_cluster;
+    file_size = entry.file_size;
+
+    DEBUG_PRINT("Found file: %.8s.%.3s, cluster=%u, size=%lu",
+                entry.filename, entry.extension, cluster, file_size);
 
     while (cluster < CLUSTER_END && cluster != CLUSTER_FREE && file_size > 0) {
         sector = get_cluster_location(bs, cluster);
         if (lseek(fd, sector * bs->bytes_per_sector, SEEK_SET) != sector * bs->bytes_per_sector) {
             perror("Error seeking to cluster");
-            free(buffer);
+            free(cluster_buffer);
             fclose(out_file);
             return -1;
         }
         
         /* Read only what we need */
         write_size = (file_size < cluster_size) ? file_size : cluster_size;
-        if (read(fd, buffer, write_size) != write_size) {
+        if (read(fd, cluster_buffer, write_size) != write_size) {
             perror("Error reading cluster data");
-            free(buffer);
+            free(cluster_buffer);
             fclose(out_file);
             return -1;
         }
 
-        if (fwrite(buffer, 1, write_size, out_file) != write_size) {
+        if (fwrite(cluster_buffer, 1, write_size, out_file) != write_size) {
             perror("Error writing to output file");
-            free(buffer);
+            free(cluster_buffer);
             fclose(out_file);
             return -1;
         }
@@ -308,7 +504,7 @@ char *host_filename;
         cluster = read_fat_entry(fd, bs, cluster);
     }
 
-    free(buffer);
+    free(cluster_buffer);
     fclose(out_file);
     return 0;
 }
@@ -326,8 +522,11 @@ char *fat_filename;
     FILE *in_file;
     unsigned char *buffer;
     unsigned short first_cluster, prev_cluster, new_cluster;
-    int i, free_entry;
+    int i, free_entry = -1;
     char search_name[11];
+    unsigned char dir_buffer[32];
+
+    DEBUG_PRINT("Copying file %s to %s", host_filename, fat_filename);
 
     memset(&new_entry, 0, sizeof(new_entry));
 
@@ -341,6 +540,8 @@ char *fat_filename;
     file_size = ftell(in_file);
     fseek(in_file, 0, SEEK_SET);
 
+    DEBUG_PRINT("File size: %lu bytes", file_size);
+
     /* Calculate cluster size */
     cluster_size = bs->bytes_per_sector * bs->sectors_per_cluster;
 
@@ -352,6 +553,8 @@ char *fat_filename;
             available_clusters++;
         }
     }
+
+    DEBUG_PRINT("Available clusters: %lu", available_clusters);
 
     if ((file_size + cluster_size - 1) / cluster_size > available_clusters) {
         fprintf(stderr, "Not enough free clusters\n");
@@ -374,6 +577,8 @@ char *fat_filename;
         return -1;
     }
 
+    DEBUG_PRINT("First cluster: %u", first_cluster);
+
     prev_cluster = first_cluster;
     original_file_size = file_size;
 
@@ -387,6 +592,8 @@ char *fat_filename;
         }
 
         sector = get_cluster_location(bs, prev_cluster);
+        DEBUG_PRINT("Writing %lu bytes to sector %lu", read_size, sector);
+
         if (lseek(fd, sector * bs->bytes_per_sector, SEEK_SET) != sector * bs->bytes_per_sector) {
             perror("Error seeking to cluster");
             free(buffer);
@@ -420,11 +627,21 @@ char *fat_filename;
 
     /* Set up directory entry */
     to_83_filename(fat_filename, search_name);
+    
+    /* Initialize directory entry with spaces */
+    memset(&new_entry, 0, sizeof(new_entry));
+    memset(new_entry.filename, ' ', 8);
+    memset(new_entry.extension, ' ', 3);
+    memset(new_entry.reserved, 0, 10);
+    
+    /* Copy filename and extension */
     memcpy(new_entry.filename, search_name, 8);
     memcpy(new_entry.extension, search_name + 8, 3);
+    
+    /* Set other fields */
     new_entry.attributes = ATTR_ARCHIVE;
-    new_entry.first_cluster = cpu_to_le16(first_cluster);
-    new_entry.file_size = cpu_to_le32(original_file_size);
+    new_entry.first_cluster = first_cluster;
+    new_entry.file_size = original_file_size;
     set_dos_time_date(&new_entry);
 
     /* Find free entry in root directory */
@@ -437,14 +654,13 @@ char *fat_filename;
     }
 
     for (i = 0; i < bs->root_entries; i++) {
-        struct DirEntry entry;
-        if (read(fd, &entry, sizeof(struct DirEntry)) != sizeof(struct DirEntry)) {
+        if (read(fd, dir_buffer, 32) != 32) {
             perror("Error reading directory entry");
             free(buffer);
             fclose(in_file);
             return -1;
         }
-        if (entry.filename[0] == 0x00 || entry.filename[0] == 0xE5) {
+        if (dir_buffer[0] == 0x00 || dir_buffer[0] == 0xE5) {
             free_entry = i;
             break;
         }
@@ -457,6 +673,13 @@ char *fat_filename;
         return -1;
     }
 
+    DEBUG_PRINT("Writing directory entry at position %d", free_entry);
+    DEBUG_PRINT("Directory entry: %.8s.%.3s, attr=0x%02X, cluster=%u, size=%lu", 
+                new_entry.filename, new_entry.extension,
+                new_entry.attributes, new_entry.first_cluster,
+                new_entry.file_size);
+
+    /* Write the directory entry */
     if (lseek(fd, root_dir_start + (free_entry * sizeof(struct DirEntry)), SEEK_SET) != 
         root_dir_start + (free_entry * sizeof(struct DirEntry))) {
         perror("Error seeking to directory entry");
@@ -465,12 +688,62 @@ char *fat_filename;
         return -1;
     }
 
-    if (write(fd, &new_entry, sizeof(struct DirEntry)) != sizeof(struct DirEntry)) {
+    /* Write the directory entry in little-endian format */
+    memset(dir_buffer, 0, 32);
+    
+    /* Copy filename and extension */
+    memcpy(dir_buffer, new_entry.filename, 8);
+    memcpy(dir_buffer + 8, new_entry.extension, 3);
+    dir_buffer[11] = new_entry.attributes;
+    memcpy(dir_buffer + 12, new_entry.reserved, 10);
+    
+    /* Convert time and date to little-endian */
+    dir_buffer[22] = new_entry.time & 0xFF;
+    dir_buffer[23] = (new_entry.time >> 8) & 0xFF;
+    dir_buffer[24] = new_entry.date & 0xFF;
+    dir_buffer[25] = (new_entry.date >> 8) & 0xFF;
+    
+    /* Convert first cluster and file size to little-endian */
+    dir_buffer[26] = new_entry.first_cluster & 0xFF;
+    dir_buffer[27] = (new_entry.first_cluster >> 8) & 0xFF;
+    dir_buffer[28] = new_entry.file_size & 0xFF;
+    dir_buffer[29] = (new_entry.file_size >> 8) & 0xFF;
+    dir_buffer[30] = (new_entry.file_size >> 16) & 0xFF;
+    dir_buffer[31] = (new_entry.file_size >> 24) & 0xFF;
+
+    if (write(fd, dir_buffer, 32) != 32) {
         perror("Error writing directory entry");
         free(buffer);
         fclose(in_file);
         return -1;
     }
+
+    /* Verify the directory entry was written correctly */
+    if (lseek(fd, root_dir_start + (free_entry * sizeof(struct DirEntry)), SEEK_SET) != 
+        root_dir_start + (free_entry * sizeof(struct DirEntry))) {
+        perror("Error seeking to directory entry for verification");
+        free(buffer);
+        fclose(in_file);
+        return -1;
+    }
+
+    if (read(fd, dir_buffer, 32) != 32) {
+        perror("Error reading directory entry for verification");
+        free(buffer);
+        fclose(in_file);
+        return -1;
+    }
+
+    DEBUG_PRINT("Verified directory entry: %.8s.%.3s, attr=0x%02X, cluster=%u, size=%lu",
+                dir_buffer, dir_buffer + 8,
+                dir_buffer[11],
+                (dir_buffer[27] << 8) | dir_buffer[26],
+                ((unsigned long)dir_buffer[31] << 24) |
+                ((unsigned long)dir_buffer[30] << 16) |
+                ((unsigned long)dir_buffer[29] << 8) |
+                dir_buffer[28]);
+
+    DEBUG_PRINT("File copy completed successfully");
 
     free(buffer);
     fclose(in_file);
@@ -492,7 +765,7 @@ unsigned short cluster;
         return CLUSTER_BAD;
     }
     
-    fat_offset = cluster + (cluster / 2);
+    fat_offset = cluster + (cluster / 2);  /* Multiply by 1.5 */
     fat_sector = bs->reserved_sectors + (fat_offset / bs->bytes_per_sector);
     fat_entry_offset = fat_offset % bs->bytes_per_sector;
     
@@ -507,12 +780,22 @@ unsigned short cluster;
         return CLUSTER_BAD;
     }
     
-    if (cluster & 1)
-        fat_entry = ((fat_data[1] & 0x0F) << 8) | fat_data[0];
-    else
-        fat_entry = (fat_data[2] << 4) | (fat_data[1] >> 4);
+    DEBUG_PRINT("Reading FAT entry for cluster %u at offset %lu: bytes = %02X %02X %02X",
+                cluster, fat_offset, fat_data[0], fat_data[1], fat_data[2]);
     
-    return le16_to_cpu(fat_entry);
+    /* Extract 12-bit FAT entry value */
+    if (cluster & 1) {
+        /* Odd cluster: use upper 12 bits */
+        fat_entry = ((fat_data[1] & 0xFF) << 4) | ((fat_data[0] & 0xF0) >> 4);
+    } else {
+        /* Even cluster: use lower 12 bits */
+        fat_entry = ((fat_data[1] & 0x0F) << 8) | fat_data[0];
+    }
+    
+    DEBUG_PRINT("FAT entry for cluster %u: value = %u (0x%03X)",
+                cluster, fat_entry, fat_entry);
+    
+    return fat_entry;
 }
 
 /* Get physical sector for cluster */
@@ -543,8 +826,12 @@ unsigned short value;
         return -1;
     }
     
-    value = cpu_to_le16(value);
-    fat_offset = cluster + (cluster / 2);
+    /* Validate value */
+    if (value > 0xFFF) {
+        value = 0xFFF;  /* Maximum 12-bit value */
+    }
+    
+    fat_offset = cluster + (cluster / 2);  /* Multiply by 1.5 */
     fat_sector = bs->reserved_sectors + (fat_offset / bs->bytes_per_sector);
     fat_entry_offset = fat_offset % bs->bytes_per_sector;
     
@@ -559,13 +846,22 @@ unsigned short value;
         return -1;
     }
     
+    DEBUG_PRINT("Updating FAT entry for cluster %u at offset %lu: old bytes = %02X %02X %02X",
+                cluster, fat_offset, fat_data[0], fat_data[1], fat_data[2]);
+    
+    /* Update FAT entry */
     if (cluster & 1) {
+        /* Odd cluster: update upper 12 bits */
+        fat_data[0] = (fat_data[0] & 0x0F) | ((value & 0x0F) << 4);
+        fat_data[1] = (value >> 4) & 0xFF;
+    } else {
+        /* Even cluster: update lower 12 bits */
         fat_data[0] = value & 0xFF;
         fat_data[1] = (fat_data[1] & 0xF0) | ((value >> 8) & 0x0F);
-    } else {
-        fat_data[1] = (fat_data[1] & 0x0F) | ((value << 4) & 0xF0);
-        fat_data[2] = (value >> 4) & 0xFF;
     }
+    
+    DEBUG_PRINT("Writing FAT entry for cluster %u: value = 0x%03X, new bytes = %02X %02X %02X",
+                cluster, value, fat_data[0], fat_data[1], fat_data[2]);
     
     /* Update both FAT copies */
     for (i = 0; i < bs->fat_count; i++) {
@@ -600,71 +896,4 @@ struct BootSector *bs;
         }
     }
     return CLUSTER_FREE;
-}
-
-/* Convert filename to 8.3 format */
-int to_83_filename(name, out)
-char *name;
-char *out;
-{
-    char *dot;
-    int i, base_len, ext_len;
-    static int counter = 1;
-    
-    /* Initialize with spaces */
-    for (i = 0; i < 11; i++)
-        out[i] = ' ';
-    
-    /* Find last dot */
-    dot = strrchr(name, '.');
-    
-    /* -- Process base name -- */
-    /* Calculate base length without special chars */
-    base_len = 0;
-    for (i = 0; name[i] && name[i] != '.' && base_len < 8; i++) {
-        /* Convert to uppercase and handle special chars */
-        if (isalnum(name[i])) {
-            out[base_len++] = toupper(name[i]);
-        } else if (name[i] == '_' || name[i] == '-') {
-            out[base_len++] = '_';
-        }
-    }
-    
-    /* Handle truncation */
-    if (base_len == 0) {  /* No valid chars */
-        memcpy(out, "FILE", 4);
-        base_len = 4;
-    } 
-    else if ((dot - name) > 8) {  /* Original name was long */
-        if (base_len > 6) base_len = 6;
-        out[base_len] = '~';
-        out[base_len+1] = '0' + (counter++ % 10);
-        base_len += 2;
-    }
-    
-    /* -- Process extension -- */
-    if (dot && dot[1]) {
-        ext_len = 0;
-        for (i = 1; ext_len < 3 && dot[i]; i++) {
-            /* Convert to uppercase and handle special chars */
-            if (isalnum(dot[i])) {
-                out[8 + ext_len++] = toupper(dot[i]);
-            } else if (dot[i] == '_' || dot[i] == '-') {
-                out[8 + ext_len++] = '_';
-            }
-        }
-        if (ext_len == 0) {
-            out[8] = '_';  /* Empty extension case */
-        }
-    }
-    
-    return 0;
-}
-
-/* Set DOS time/date in directory entry */
-void set_dos_time_date(entry)
-struct DirEntry *entry;
-{
-    entry->time = 0x0000;  /* 00:00:00 */
-    entry->date = 0x21C1;  /* 01-01-2020 */
 }

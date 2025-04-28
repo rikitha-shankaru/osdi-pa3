@@ -10,7 +10,7 @@ check_command() {
 }
 
 # Check for required commands
-check_command mkfs.fat
+check_command mkfs.msdos
 check_command dd
 
 # Rebuild the project
@@ -20,25 +20,25 @@ make
 
 # Create a fresh FAT12 disk image
 echo "Creating FAT12 disk image..."
-dd if=/dev/zero bs=512 count=2880 of=test.fat
-mkfs.fat -F 12 -n "TEST" -S 512 -s 1 -f 2 -r 224 test.fat
+dd if=/dev/zero bs=512 count=2880 of=test_disk.fat
+mkfs.msdos -n "MINIX FAT12" -F 12 test_disk.fat
 
 # Test 1: List empty disk (tests disk access and boot sector parsing)
 echo "\nTest 1: List empty disk (tests disk access and boot sector parsing)"
-./fat12 test.fat list
+./fat12 test_disk.fat list
 
 # Test 2: Create and list multiple files (tests file copy in and directory listing)
 echo "\nTest 2: Create and list multiple files"
 echo "Hello FAT12!" > test1.txt
 echo "Another test file" > test2.txt
-./fat12 test.fat copyin test1.txt TEST1.TXT
-./fat12 test.fat copyin test2.txt TEST2.TXT
-./fat12 test.fat list
+./fat12 test_disk.fat copyin test1.txt TEST1.TXT
+./fat12 test_disk.fat copyin test2.txt TEST2.TXT
+./fat12 test_disk.fat list
 
 # Test 3: Copy files out (tests file copy out)
 echo "\nTest 3: Copy files out"
-./fat12 test.fat copyout TEST1.TXT output1.txt
-./fat12 test.fat copyout TEST2.TXT output2.txt
+./fat12 test_disk.fat copyout TEST1.TXT output1.txt
+./fat12 test_disk.fat copyout TEST2.TXT output2.txt
 echo "Contents of TEST1.TXT:"
 cat output1.txt
 echo "\nContents of TEST2.TXT:"
@@ -61,6 +61,6 @@ else
 fi
 
 # Cleanup
-rm -f test1.txt test2.txt output1.txt output2.txt test.fat
+rm -f test1.txt test2.txt output1.txt output2.txt test_disk.fat
 
 echo "\nAll core functionality tests completed successfully!" 
