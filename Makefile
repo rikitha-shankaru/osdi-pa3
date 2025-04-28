@@ -1,6 +1,6 @@
 # FAT12 Utility Makefile for MINIX 3.1
 CC = cc
-CFLAGS = -D_MINIX -D_POSIX_SOURCE -ansi -Wall
+CFLAGS = -D_MINIX -D_POSIX_SOURCE -w
 LDFLAGS = 
 
 SRCS = fat12.c main.c
