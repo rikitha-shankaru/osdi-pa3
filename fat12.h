@@ -67,7 +67,7 @@ struct BootSector {
     unsigned char fs_type[8];
     unsigned char boot_code[448];
     unsigned short signature;
-} __attribute__((packed));
+};
 
 /* Directory Entry structure */
 struct DirEntry {
@@ -79,9 +79,9 @@ struct DirEntry {
     unsigned short date;
     unsigned short first_cluster;
     unsigned long file_size;
-} __attribute__((packed));
+};
 
-/* Change all function declarations in fat12.h to K&R style */
+/* Core function declarations in K&R style */
 int read_boot_sector();
 int list_root_directory();
 int copyout();

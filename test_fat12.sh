@@ -21,7 +21,7 @@ make
 # Create a fresh FAT12 disk image
 echo "Creating FAT12 disk image..."
 dd if=/dev/zero bs=512 count=2880 of=test.fat
-mkfs.fat -F 12 test.fat
+mkfs.fat -F 12 -n "TEST" -S 512 -s 1 -f 2 -r 224 test.fat
 
 # Test 1: List empty disk (tests disk access and boot sector parsing)
 echo "\nTest 1: List empty disk (tests disk access and boot sector parsing)"
@@ -61,6 +61,6 @@ else
 fi
 
 # Cleanup
-rm -f test1.txt test2.txt output1.txt output2.txt
+rm -f test1.txt test2.txt output1.txt output2.txt test.fat
 
 echo "\nAll core functionality tests completed successfully!" 

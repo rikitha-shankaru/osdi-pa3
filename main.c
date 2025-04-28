@@ -11,12 +11,9 @@ char *prog_name;
     printf("FAT12 Disk Utility for MINIX 3.1\n");
     printf("Usage: %s <disk_image> <command> [args...]\n", prog_name);
     printf("Commands:\n");
-    printf("  list [path]          - List directory contents\n");
-    printf("  copyout <src> <dest> - Extract file from disk\n");
-    printf("  copyin <src> <dest>  - Add file to disk\n");
-    printf("  mkdir <path>         - Create directory (extra)\n");
-    printf("  rm <path>            - Delete file/dir (extra)\n");
-    printf("  edit <path> <offset> <size> - Edit file in place (extra)\n");
+    printf("  list                 - List root directory contents\n");
+    printf("  copyout <src> <dest> - Extract file from disk to host\n");
+    printf("  copyin <src> <dest>  - Add file from host to disk\n");
 }
 
 /* Main function */
@@ -32,17 +29,20 @@ char *argv[];
         return 1;
     }
     
+    /* Open disk image with proper permissions */
     fd = open(argv[1], O_RDWR);
     if (fd == -1) {
         perror("Error opening disk image");
         return 1;
     }
     
+    /* Read and validate boot sector */
     if (read_boot_sector(fd, &bs) != 0) {
         close(fd);
         return 1;
     }
     
+    /* Handle commands */
     if (strcmp(argv[2], "list") == 0) {
         if (list_root_directory(fd, &bs) != 0) {
             close(fd);
@@ -55,6 +55,7 @@ char *argv[];
             close(fd);
             return 1;
         }
+        /* Copy file from host to disk */
         if (copyin(fd, &bs, argv[3], argv[4]) != 0) {
             close(fd);
             return 1;
@@ -66,6 +67,7 @@ char *argv[];
             close(fd);
             return 1;
         }
+        /* Copy file from disk to host */
         if (copyout(fd, &bs, argv[3], argv[4]) != 0) {
             close(fd);
             return 1;
